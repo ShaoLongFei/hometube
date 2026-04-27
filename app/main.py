@@ -1,4 +1,5 @@
 # Standard library imports
+import json
 import os
 import shutil
 import subprocess
@@ -18,7 +19,12 @@ from app.constants import (
     GENERIC_PERCENTAGE_PATTERN,
     LOGS_CONTAINER_STYLE,
 )
-from app.translations import t, configure_language
+from app.translations import (
+    configure_language,
+    get_supported_languages,
+    normalize_language_code,
+    t,
+)
 from app.core import (
     build_base_ytdlp_command,
     build_cookies_params as core_build_cookies_params,
@@ -144,9 +150,6 @@ from app.config import (
 
 # Load settings once
 settings = get_settings()
-
-# Configure translations with the loaded UI language
-configure_language(settings.UI_LANGUAGE)
 
 # Ensure folders exist and get paths
 VIDEOS_FOLDER, TMP_DOWNLOAD_FOLDER = ensure_folders_exist()
@@ -448,7 +451,7 @@ def smart_download_with_profiles(
     quality_strategy = st.session_state.get("download_quality_strategy", "auto_best")
 
     if not chosen_profiles:
-        error_msg = "No profiles available for download. Please select a quality strategy first."
+        error_msg = t("error_no_profiles_for_download")
         safe_push_log(f"❌ {error_msg}")
         return 1, error_msg
 
@@ -887,11 +890,18 @@ _FAVICON_PATH = (
 
 # Must be the first Streamlit command
 st.set_page_config(
-    page_title=t("page_title"),
+    page_title="HomeTube",
     page_icon=str(_FAVICON_PATH) if _FAVICON_PATH.exists() else "🎬",
     layout="centered",
     initial_sidebar_state="collapsed",
 )
+
+if "ui_language" not in st.session_state:
+    st.session_state.ui_language = normalize_language_code(settings.UI_LANGUAGE)
+
+current_ui_language = normalize_language_code(st.session_state.ui_language)
+st.session_state.ui_language = current_ui_language
+configure_language(current_ui_language)
 
 # === SIDEBAR ===
 
@@ -910,11 +920,24 @@ def get_tmp_folder_size_mb() -> float:
     return 0.0
 
 
-with st.sidebar.expander("⚙️ System"):
-    if st.button("🔄 Check for updates", use_container_width=True):
+language_options = get_supported_languages()
+selected_ui_language = st.sidebar.selectbox(
+    t("language_selector_label"),
+    options=language_options,
+    index=language_options.index(current_ui_language),
+    format_func=lambda code: t(f"language_option_{code}"),
+)
+
+if selected_ui_language != current_ui_language:
+    st.session_state.ui_language = selected_ui_language
+    configure_language(selected_ui_language)
+    st.rerun()
+
+with st.sidebar.expander(t("sidebar_system")):
+    if st.button(t("sidebar_check_updates"), use_container_width=True):
         check_and_show_updates()
 
-with st.sidebar.expander("📀 Temporary Files"):
+with st.sidebar.expander(t("sidebar_temporary_files")):
     # Show current size
     tmp_size_mb = get_tmp_folder_size_mb()
 
@@ -2690,18 +2713,19 @@ if (
 
             if settings.ALLOW_OVERWRITE_EXISTING_VIDEO:
                 st.warning(
-                    f"⚠️ **File already exists:** `{existing_file.name}`\n\n"
-                    f"📊 Size: {file_size_mb:.2f} MiB\n\n"
-                    f"🔄 **Overwrite mode enabled** (ALLOW_OVERWRITE_EXISTING_VIDEO=true)\n\n"
-                    f"The existing file will be replaced if you proceed with the download."
+                    t(
+                        "existing_file_overwrite_warning",
+                        filename=existing_file.name,
+                        size=file_size_mb,
+                    )
                 )
             else:
                 st.error(
-                    f"❌ **File already exists:** `{existing_file.name}`\n\n"
-                    f"📊 Size: {file_size_mb:.2f} MiB\n\n"
-                    f"🛡️ **Protection active:** ALLOW_OVERWRITE_EXISTING_VIDEO=false\n\n"
-                    f"Download will be skipped to protect the existing file.\n\n"
-                    f"💡 To allow overwrites, set `ALLOW_OVERWRITE_EXISTING_VIDEO=true` in your `.env` file."
+                    t(
+                        "existing_file_protection_error",
+                        filename=existing_file.name,
+                        size=file_size_mb,
+                    )
                 )
 
 # subtitles multiselect from env
@@ -2734,16 +2758,14 @@ with st.expander(f"{t('ads_sponsors_title')}", expanded=False):
         st.session_state.sponsors_to_mark = []
 
     # SponsorBlock presets first
-    preset_help = "These are preset configurations."
+    preset_help = t("sponsors_presets_help_base")
     if st.session_state.detected_sponsors:
-        preset_help += (
-            " ⚡ Dynamic configuration is active and will override these presets."
-        )
+        preset_help += " " + t("sponsors_presets_help_dynamic")
     else:
-        preset_help += " Use 'Detect Sponsors' below for dynamic configuration."
+        preset_help += " " + t("sponsors_presets_help_detect")
 
     sb_choice = st.selectbox(
-        f"### {t('ads_sponsors_label')} (Presets)",
+        f"### {t('ads_sponsors_label_presets')}",
         options=[
             t("sb_option_1"),  # Default
             t("sb_option_2"),  # Moderate
@@ -2771,7 +2793,7 @@ with st.expander(f"{t('ads_sponsors_title')}", expanded=False):
     # Reset button if dynamic detection is active
     if st.session_state.detected_sponsors:
         with col2:
-            if st.button("🔄 Reset Dynamic Detection", key="reset_detection"):
+            if st.button(t("sponsors_reset_detection_button"), key="reset_detection"):
                 st.session_state.detected_sponsors = []
                 st.session_state.sponsors_to_remove = []
                 st.session_state.sponsors_to_mark = []
@@ -2779,7 +2801,7 @@ with st.expander(f"{t('ads_sponsors_title')}", expanded=False):
 
     # Handle sponsor detection
     if detect_btn and url.strip():
-        with st.spinner("🔍 Analyzing video for sponsor segments..."):
+        with st.spinner(t("sponsors_detecting_spinner")):
             try:
                 # Get cookies for yt-dlp - use centralized function
                 cookies_part = build_cookies_params(url)
@@ -2790,13 +2812,13 @@ with st.expander(f"{t('ads_sponsors_title')}", expanded=False):
 
                 if segments:
                     st.session_state.detected_sponsors = segments
-                    st.success(f"✅ {len(segments)} sponsor segments detected!")
+                    st.success(t("sponsors_detected_success", count=len(segments)))
                 else:
                     st.session_state.detected_sponsors = []
-                    st.info("ℹ️ No sponsor segments found in this video")
+                    st.info(t("sponsors_detected_none"))
 
             except Exception as e:
-                st.error(f"❌ Error detecting sponsors: {e}")
+                st.error(t("sponsors_detect_error", error=e))
                 st.session_state.detected_sponsors = []
 
     # Display detected sponsors if any
@@ -3058,12 +3080,7 @@ with st.expander(t("cookies_title"), expanded=False):
             st.session_state["cookies_expired"] = False
             st.rerun()
 
-    st.info(
-        "Use the Chromium companion extension to export cookies for the site "
-        "you are currently browsing, then paste the exported Netscape cookies "
-        "text below. HomeTube will automatically split and save one cookies "
-        "file per primary domain."
-    )
+    st.info(t("cookies_extension_intro"))
 
     extension_dir = (
         Path(__file__).resolve().parent.parent
@@ -3072,92 +3089,107 @@ with st.expander(t("cookies_title"), expanded=False):
     )
     extension_zip_bytes = build_extension_zip_bytes(extension_dir)
 
-    components.html(
-        """
+    extension_status_title = t("cookies_extension_status_title")
+    extension_status_checking = t("cookies_extension_status_checking")
+    extension_status_installed = t("cookies_extension_status_installed")
+    extension_status_installed_help = t("cookies_extension_status_installed_help")
+    extension_status_not_installed = t("cookies_extension_status_not_installed")
+    extension_status_missing_help = t("cookies_extension_status_missing_help")
+
+    extension_status_html = """
         <div id="hometube-extension-status" style="font-family: sans-serif; border: 1px solid #2f3640; border-radius: 12px; padding: 14px; background: #0f172a; color: #e2e8f0; overflow: hidden; box-sizing: border-box; min-height: 132px;">
-          <div style="font-weight: 600; margin-bottom: 8px;">Chromium Extension Status</div>
-          <div id="status-line">Checking for HomeTube Cookie Export extension…</div>
+          <div style="font-weight: 600; margin-bottom: 8px;">{title}</div>
+          <div id="status-line">{checking}</div>
           <div id="status-help" style="margin-top: 8px; padding-bottom: 6px; font-size: 0.92em; color: #cbd5e1; line-height: 1.45;"></div>
         </div>
         <script>
           const statusLine = document.getElementById("status-line");
           const statusHelp = document.getElementById("status-help");
+          const installedLabel = {installed_label};
+          const installedHelp = {installed_help};
+          const missingLabel = {missing_label};
+          const missingHelp = {missing_help};
           let detected = false;
 
-          function renderInstalled(version) {
-            statusLine.textContent = `Installed${version ? ` · v${version}` : ""}`;
-            statusHelp.textContent = "Open the site you want cookies for, click the extension icon, copy the exported cookies, then paste them back into HomeTube below.";
-          }
+          function renderInstalled(version) {{
+            statusLine.textContent = version ? installedLabel + " · v" + version : installedLabel;
+            statusHelp.textContent = installedHelp;
+          }}
 
-          function renderMissing() {
-            statusLine.textContent = "Not installed";
-            statusHelp.textContent = "Install the unpacked extension from browser-extension/hometube-cookie-export in your HomeTube checkout: open chrome://extensions, enable Developer Mode, click Load unpacked, then select that folder.";
-          }
+          function renderMissing() {{
+            statusLine.textContent = missingLabel;
+            statusHelp.textContent = missingHelp;
+          }}
 
-          window.addEventListener("message", (event) => {
-            if (event.data && event.data.type === "HOMETUBE_EXTENSION_PONG") {
+          window.addEventListener("message", (event) => {{
+            if (event.data && event.data.type === "HOMETUBE_EXTENSION_PONG") {{
               detected = true;
               renderInstalled(event.data.version || "");
-            }
-          });
+            }}
+          }});
 
-          window.parent.postMessage({ type: "HOMETUBE_EXTENSION_PING" }, "*");
-          setTimeout(() => {
-            if (!detected) {
+          window.parent.postMessage({{ type: "HOMETUBE_EXTENSION_PING" }}, "*");
+          setTimeout(() => {{
+            if (!detected) {{
               renderMissing();
-            }
-          }, 1200);
+            }}
+          }}, 1200);
         </script>
-        """,
-        height=170,
+        """.format(
+        title=extension_status_title,
+        checking=extension_status_checking,
+        installed_label=json.dumps(extension_status_installed),
+        installed_help=json.dumps(extension_status_installed_help),
+        missing_label=json.dumps(extension_status_not_installed),
+        missing_help=json.dumps(extension_status_missing_help),
+    )
+
+    components.html(
+        extension_status_html,
+        height=188,
     )
 
     st.download_button(
-        "Download Extension ZIP",
+        t("cookies_extension_download_button"),
         data=extension_zip_bytes,
         file_name="hometube-cookie-export.zip",
         mime="application/zip",
         key="download_hometube_extension_zip",
-        help="Download the unpacked Chromium extension bundle as a ZIP file.",
+        help=t("cookies_extension_download_help"),
     )
-    st.caption(
-        "Install path: download ZIP → unzip it anywhere on your computer → open "
-        "`chrome://extensions` → enable Developer mode → click `Load unpacked` "
-        "→ select the unzipped `hometube-cookie-export` folder."
-    )
+    st.caption(t("cookies_extension_install_caption"))
 
-    st.caption(f"Managed cookies folder: `{settings.MANAGED_COOKIES_FOLDER}`")
+    st.caption(
+        f"{t('cookies_managed_folder_label')}: `{settings.MANAGED_COOKIES_FOLDER}`"
+    )
 
     pasted_cookies_text = st.text_area(
-        "Paste extension-exported cookies text",
+        t("cookies_paste_label"),
         value="",
-        placeholder=(
-            "# Netscape HTTP Cookie File\n"
-            ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\t..."
-        ),
+        placeholder=t("cookies_paste_placeholder"),
         height=220,
         key="managed_site_cookies_text",
     )
 
-    if st.button("Parse and Save Cookies", key="save_managed_site_cookies"):
+    if st.button(t("cookies_parse_save_button"), key="save_managed_site_cookies"):
         try:
             saved_sites = save_cookies_text_by_site(pasted_cookies_text)
         except ValueError as exc:
-            st.error(f"Could not import cookies: {exc}")
+            st.error(t("cookies_import_error", error=exc))
         except Exception as exc:
-            st.error(f"Unexpected error while saving cookies: {exc}")
+            st.error(t("cookies_import_unexpected_error", error=exc))
         else:
             site_list = ", ".join(sorted(saved_sites.keys()))
             st.session_state["cookies_method"] = "file"
-            st.success(f"Saved site cookies for: {site_list}")
+            st.success(t("cookies_import_saved", sites=site_list))
             st.rerun()
 
     saved_site_cookies = list_saved_site_cookies()
     st.session_state["cookies_method"] = "file" if saved_site_cookies else "none"
 
-    st.markdown("**Saved Site Cookies**")
+    st.markdown(f"**{t('cookies_saved_sites_title')}**")
     if not saved_site_cookies:
-        st.caption("No managed site cookies saved yet.")
+        st.caption(t("cookies_saved_sites_empty"))
     else:
         for entry in saved_site_cookies:
             site_col, meta_col, action_col = st.columns([2, 3, 1])
@@ -3169,10 +3201,14 @@ with st.expander(t("cookies_title"), expanded=False):
                     time.localtime(entry["modified_at"]),
                 )
                 st.caption(
-                    f"{entry['cookie_count']} cookies · Updated {modified_at}"
+                    t(
+                        "cookies_saved_site_meta",
+                        count=entry["cookie_count"],
+                        modified_at=modified_at,
+                    )
                 )
             with action_col:
-                if st.button("Delete", key=f"delete_site_cookie_{entry['site']}"):
+                if st.button(t("common_delete"), key=f"delete_site_cookie_{entry['site']}"):
                     delete_site_cookies_file(entry["site"])
                     st.rerun()
 
@@ -4166,9 +4202,7 @@ if submitted:
             push_log("✅ Skipping download to protect existing file")
 
             status_placeholder.warning(
-                f"⚠️ File already exists: {existing_files[0].name}\n\n"
-                "Download skipped to protect existing file.\n"
-                "To allow overwrites, set ALLOW_OVERWRITE_EXISTING_VIDEO=true"
+                t("existing_file_skip_warning", filename=existing_files[0].name)
             )
 
             # Mark download as finished
@@ -4184,7 +4218,7 @@ if submitted:
     unique_folder_name = st.session_state.get("unique_folder_name", "unknown")
 
     if not tmp_url_workspace:
-        st.error("❌ Video workspace not initialized. Please re-enter the URL.")
+        st.error(t("error_video_workspace_not_initialized"))
         st.stop()
 
     # For now, tmp_video_dir points to the same location as tmp_url_workspace

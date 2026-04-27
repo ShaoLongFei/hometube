@@ -8,6 +8,14 @@ from typing import Any
 # Cache for translations to avoid repeated loading
 _translations_cache = None
 _configured_language = None
+_default_language = "en"
+
+_LANGUAGE_MODULES = {
+    "en": "en",
+    "fr": "fr",
+    "zh": "zh",
+    "zh-cn": "zh",
+}
 
 
 def configure_language(language: str) -> None:
@@ -18,8 +26,20 @@ def configure_language(language: str) -> None:
         language: Language code (e.g., 'en', 'fr')
     """
     global _configured_language, _translations_cache
-    _configured_language = language.lower() if language else "en"
+    normalized = (language or _default_language).lower()
+    _configured_language = normalized
     _translations_cache = None  # Clear cache to force reload
+
+
+def normalize_language_code(language: str | None) -> str:
+    """Normalize a language code and apply safe fallback."""
+    normalized = (language or _default_language).lower()
+    return _LANGUAGE_MODULES.get(normalized, _default_language)
+
+
+def get_supported_languages() -> list[str]:
+    """Return languages that should be shown in the UI selector."""
+    return ["en", "zh", "fr"]
 
 
 def get_translations() -> dict[str, Any]:
@@ -32,21 +52,27 @@ def get_translations() -> dict[str, Any]:
 
     # Priority: configured language > environment variable > default
     if _configured_language is not None:
-        language = _configured_language
+        language = normalize_language_code(_configured_language)
     else:
-        language = os.getenv("UI_LANGUAGE", "en").lower()
+        language = normalize_language_code(os.getenv("UI_LANGUAGE", _default_language))
 
-    if language == "en":
+    module_name = _LANGUAGE_MODULES.get(language, _default_language)
+
+    if module_name == "en":
         try:
             from .en import TRANSLATIONS
         except ImportError:
             from en import TRANSLATIONS
-    else:
-        # Default to French for any other language
+    elif module_name == "fr":
         try:
             from .fr import TRANSLATIONS
         except ImportError:
             from fr import TRANSLATIONS
+    else:
+        try:
+            from .zh import TRANSLATIONS
+        except ImportError:
+            from zh import TRANSLATIONS
 
     # Cache the translations
     _translations_cache = TRANSLATIONS
