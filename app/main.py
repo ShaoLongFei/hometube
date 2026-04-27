@@ -9,6 +9,7 @@ from pathlib import Path
 # Third-party imports
 import streamlit as st
 import streamlit.components.v1 as components
+from streamlit.runtime.scriptrunner import RerunException, StopException
 
 # HomeTube imports (using absolute imports for consistency)
 from app.constants import (
@@ -30,6 +31,8 @@ from app.core import (
     build_cookies_params as core_build_cookies_params,
 )
 from app.file_system_utils import (
+    PathAccessError,
+    classify_path_access_error,
     is_valid_cookie_file,
     is_valid_browser,
     sanitize_filename,
@@ -3460,6 +3463,15 @@ def push_log(line: str):
     render_download_button()
 
 
+def format_download_start_error(exc: Exception) -> str:
+    """Convert startup exceptions into user-facing UI messages."""
+    if isinstance(exc, PathAccessError):
+        key, kwargs = classify_path_access_error(exc)
+        return t(key, **kwargs)
+
+    return t("error_download_setup_failed", error=exc)
+
+
 # Register this push_log function for use by other modules
 register_main_push_log(push_log)
 
@@ -3851,407 +3863,419 @@ if st.session_state.get("run_seq", 0) > 0 and not st.session_state.get(
 
 # Continue with download logic if submitted
 if submitted:
-    if not url:
-        st.error(t("error_provide_url"))
-        st.stop()
-
-    # If filename is empty, we'll get it from the video title later
-    if not filename.strip():
-        push_log("📝 No filename provided, will use video title")
-        filename = None  # Will be set later from video metadata
-
-    # Parse cutting times
-    start_sec = parse_time_like(start_text)
-    end_sec = parse_time_like(end_text)
-
-    # If only end is specified, start from the beginning (0)
-    if start_sec is None and end_sec is not None:
-        start_sec = 0
-        push_log("⏱️ Start time not specified, cutting from beginning (0s)")
-
-    # Determine if we need to cut sections
-    do_cut = start_sec is not None and end_sec is not None and end_sec > start_sec
-
-    # resolve dest dir using simple folder logic
-    if video_subfolder == "/":
-        dest_dir = VIDEOS_FOLDER
-    else:
-        dest_dir = VIDEOS_FOLDER / video_subfolder
-
-    # create dirs
-    ensure_dir(VIDEOS_FOLDER)
-    ensure_dir(TMP_DOWNLOAD_FOLDER)
-    ensure_dir(dest_dir)
-
-    push_log(f"📁 Destination folder: {dest_dir}")
-
-    # === PLAYLIST DOWNLOAD MODE ===
-    if is_playlist_mode:
-        playlist_name = filename or st.session_state.get("playlist_title", "Playlist")
-        playlist_id = st.session_state.get("playlist_id", "unknown")
-        playlist_to_download = st.session_state.get("playlist_to_download", [])
-        playlist_entries = st.session_state.get("playlist_entries", [])
-
-        if not playlist_to_download:
-            st.success(t("playlist_all_downloaded"))
-            st.session_state.download_finished = True
+    try:
+        if not url:
+            st.error(t("error_provide_url"))
             st.stop()
 
-        total_videos = len(playlist_entries)
-        videos_to_dl = len(playlist_to_download)
+        # If filename is empty, we'll get it from the video title later
+        if not filename.strip():
+            push_log("📝 No filename provided, will use video title")
+            filename = None  # Will be set later from video metadata
 
-        log_title(f"📋 PLAYLIST DOWNLOAD: {playlist_name}")
-        push_log(f"📊 {videos_to_dl} videos to download out of {total_videos}")
-        push_log("")
+        # Parse cutting times
+        start_sec = parse_time_like(start_text)
+        end_sec = parse_time_like(end_text)
 
-        # Create playlist workspace
-        playlist_workspace = ensure_playlist_workspace(
-            TMP_DOWNLOAD_FOLDER, "youtube", playlist_id
-        )
-        push_log(f"🔧 Playlist workspace: {playlist_workspace}")
+        # If only end is specified, start from the beginning (0)
+        if start_sec is None and end_sec is not None:
+            start_sec = 0
+            push_log("⏱️ Start time not specified, cutting from beginning (0s)")
 
-        # Create playlist destination folder
-        playlist_dest = dest_dir / sanitize_filename(playlist_name)
-        ensure_dir(playlist_dest)
-        push_log(f"📁 Playlist destination: {playlist_dest}")
+        # Determine if we need to cut sections
+        do_cut = start_sec is not None and end_sec is not None and end_sec > start_sec
 
-        # Ensure url_info.json exists in playlist workspace
-        url_info = st.session_state.get("url_info", {})
-        url_info_path = st.session_state.get("url_info_path")
-        playlist_url_info_path = playlist_workspace / "url_info.json"
-
-        if url_info_path and Path(url_info_path).exists():
-            # Copy url_info.json to playlist workspace if it doesn't exist
-            if not playlist_url_info_path.exists():
-                import shutil
-
-                shutil.copy2(url_info_path, playlist_url_info_path)
-                push_log("📋 Copied url_info.json to playlist workspace")
-        elif url_info and "error" not in url_info:
-            # Save url_info.json if we have it but no file exists
-            import json
-
-            with open(playlist_url_info_path, "w", encoding="utf-8") as f:
-                json.dump(url_info, f, indent=2, ensure_ascii=False)
-            push_log("📋 Saved url_info.json to playlist workspace")
-
-        # Create or load playlist status
-        existing_status = load_playlist_status(playlist_workspace)
-        if not existing_status:
-            create_playlist_status(
-                playlist_workspace=playlist_workspace,
-                url=url,
-                playlist_id=playlist_id,
-                playlist_title=playlist_name,
-                entries=playlist_entries,
-            )
+        # resolve dest dir using simple folder logic
+        if video_subfolder == "/":
+            dest_dir = VIDEOS_FOLDER
         else:
-            # Update existing status with any new entries that might be missing
-            videos_status = existing_status.get("videos", {})
-            for entry in playlist_entries:
-                video_id = entry.get("id", "")
-                if video_id and video_id not in videos_status:
-                    # Add missing video entry
-                    videos_status[video_id] = {
-                        "title": entry.get("title", "Unknown"),
-                        "url": entry.get("url", ""),
-                        "status": "pending",
-                        "downloaded_at": None,
-                        "error": None,
-                    }
-            # Save updated status
-            save_playlist_status(playlist_workspace, existing_status)
+            dest_dir = VIDEOS_FOLDER / video_subfolder
 
-        # Record download attempt
-        # Get title_pattern from session state (set in UI)
-        title_pattern = st.session_state.get(
-            "playlist_title_pattern", DEFAULT_PLAYLIST_TITLE_PATTERN
-        )
-        add_playlist_download_attempt(
-            playlist_workspace=playlist_workspace,
-            custom_title=playlist_name,
-            playlist_location=video_subfolder,
-            title_pattern=title_pattern,
-        )
+        # create dirs
+        ensure_dir(VIDEOS_FOLDER)
+        ensure_dir(TMP_DOWNLOAD_FOLDER)
+        ensure_dir(dest_dir)
 
-        # Mark already downloaded videos as skipped
-        playlist_already_downloaded = st.session_state.get(
-            "playlist_already_downloaded", []
-        )
-        for entry in playlist_already_downloaded:
-            video_id = entry.get("id", "")
-            if video_id:
-                mark_video_as_skipped(playlist_workspace, video_id)
+        push_log(f"📁 Destination folder: {dest_dir}")
 
-        # Download each video in the playlist
-        initial_completed_count = len(playlist_already_downloaded)
-        completed_count = initial_completed_count
-        failed_count = 0
+        # === PLAYLIST DOWNLOAD MODE ===
+        if is_playlist_mode:
+            playlist_name = filename or st.session_state.get("playlist_title", "Playlist")
+            playlist_id = st.session_state.get("playlist_id", "unknown")
+            playlist_to_download = st.session_state.get("playlist_to_download", [])
+            playlist_entries = st.session_state.get("playlist_entries", [])
 
-        # Get the title pattern from session state
-        title_pattern = st.session_state.get(
-            "playlist_title_pattern", DEFAULT_PLAYLIST_TITLE_PATTERN
-        )
-
-        for idx, entry in enumerate(playlist_to_download, 1):
-            video_id = entry.get("id", "")
-            video_title = entry.get("title", f"Video {idx}")
-            video_url = entry.get("url", "")
-            # Get playlist index (1-based position in original playlist)
-            playlist_index = entry.get("playlist_index", idx)
-
-            if not video_url and video_id:
-                video_url = f"https://www.youtube.com/watch?v={video_id}"
-
-            downloads_total = max(videos_to_dl, 1)
-            session_current = idx
-            playlist_position = playlist_index or (initial_completed_count + idx)
-            playlist_note = ""
-            if total_videos:
-                playlist_note = t(
-                    "playlist_position_note",
-                    current=playlist_position,
-                    total=total_videos,
-                )
-
-            push_log("")
-            download_message = t(
-                "playlist_downloading_video",
-                current=session_current,
-                total=videos_to_dl,
-                title=video_title,
-            )
-            log_title(download_message)
-            if playlist_note:
-                push_log(playlist_note)
-
-            # Update status
-            update_video_status_in_playlist(playlist_workspace, video_id, "downloading")
-            status_message = download_message
-            if playlist_note:
-                status_message = f"{download_message}\n{playlist_note}"
-            status_placeholder.info(status_message)
-
-            # Update progress
-            raw_progress = (session_current - 1) / downloads_total
-            progress_percent = min(max(raw_progress, 0.0), 1.0)
-            progress_placeholder.progress(progress_percent)
-
-            # Create video workspace (videos are stored separately, not inside playlist)
-            # This ensures the same video is never downloaded twice
-            video_workspace = ensure_video_workspace(
-                TMP_DOWNLOAD_FOLDER, "youtube", video_id
-            )
-
-            # Use the reusable video download function (same as single videos)
-            base_output = sanitize_filename(video_title)
-            do_cut_video = False  # No cutting for individual playlist videos
-            subs_selected_video = subs_selected  # Use playlist subtitle settings
-            force_mp4_video = False
-            ytdlp_custom_args_video = st.session_state.get("ytdlp_custom_args", "")
-
-            # Download the video using the reusable function
-            ret_dl, final_tmp, error_msg = download_single_video(
-                video_url=video_url,
-                video_id=video_id,
-                video_title=video_title,
-                video_workspace=video_workspace,
-                base_output=base_output,
-                embed_chapters=embed_chapters,
-                embed_subs=embed_subs,
-                force_mp4=force_mp4_video,
-                ytdlp_custom_args=ytdlp_custom_args_video,
-                do_cut=do_cut_video,
-                subs_selected=subs_selected_video,
-                sb_choice=sb_choice,
-                requested_format_id=None,  # Auto mode for playlists
-                progress_placeholder=progress_placeholder,
-                status_placeholder=status_placeholder,
-                info_placeholder=info_placeholder,
-            )
-
-            # Handle cancellation
-            if ret_dl == -1:
-                push_log("⚠️ Download cancelled by user")
+            if not playlist_to_download:
+                st.success(t("playlist_all_downloaded"))
                 st.session_state.download_finished = True
                 st.stop()
 
-            # Process result
-            if ret_dl == 0 and final_tmp and final_tmp.exists():
-                # Render the final filename using the pattern
-                ext = final_tmp.suffix.lstrip(".")  # Remove leading dot
-                playlist_channel = st.session_state.get("playlist_channel", "")
-                resolved_title = render_title(
-                    title_pattern,
-                    i=playlist_index,
-                    title=video_title,
-                    video_id=video_id,
-                    ext=ext,
-                    total=total_videos,
-                    channel=playlist_channel,
-                )
+            total_videos = len(playlist_entries)
+            videos_to_dl = len(playlist_to_download)
 
-                # Move to playlist destination with rendered title (saves disk space)
-                dest_file = playlist_dest / resolved_title
-                move_final_to_destination(final_tmp, dest_file, push_log)
+            log_title(f"📋 PLAYLIST DOWNLOAD: {playlist_name}")
+            push_log(f"📊 {videos_to_dl} videos to download out of {total_videos}")
+            push_log("")
 
-                # Update playlist status to mark video as completed
-                # Include pattern info for future reference
-                update_video_status_in_playlist(
-                    playlist_workspace,
-                    video_id,
-                    "completed",
-                    extra_data={
-                        "title_pattern": title_pattern,
-                        "resolved_title": resolved_title,
-                        "playlist_index": playlist_index,
-                    },
+            # Create playlist workspace
+            playlist_workspace = ensure_playlist_workspace(
+                TMP_DOWNLOAD_FOLDER, "youtube", playlist_id
+            )
+            push_log(f"🔧 Playlist workspace: {playlist_workspace}")
+
+            # Create playlist destination folder
+            playlist_dest = dest_dir / sanitize_filename(playlist_name)
+            ensure_dir(playlist_dest)
+            push_log(f"📁 Playlist destination: {playlist_dest}")
+
+            # Ensure url_info.json exists in playlist workspace
+            url_info = st.session_state.get("url_info", {})
+            url_info_path = st.session_state.get("url_info_path")
+            playlist_url_info_path = playlist_workspace / "url_info.json"
+
+            if url_info_path and Path(url_info_path).exists():
+                # Copy url_info.json to playlist workspace if it doesn't exist
+                if not playlist_url_info_path.exists():
+                    import shutil
+
+                    shutil.copy2(url_info_path, playlist_url_info_path)
+                    push_log("📋 Copied url_info.json to playlist workspace")
+            elif url_info and "error" not in url_info:
+                # Save url_info.json if we have it but no file exists
+                import json
+
+                with open(playlist_url_info_path, "w", encoding="utf-8") as f:
+                    json.dump(url_info, f, indent=2, ensure_ascii=False)
+                push_log("📋 Saved url_info.json to playlist workspace")
+
+            # Create or load playlist status
+            existing_status = load_playlist_status(playlist_workspace)
+            if not existing_status:
+                create_playlist_status(
+                    playlist_workspace=playlist_workspace,
+                    url=url,
+                    playlist_id=playlist_id,
+                    playlist_title=playlist_name,
+                    entries=playlist_entries,
                 )
-                push_log(
-                    t(
-                        "playlist_video_completed",
-                        current=session_current,
-                        total=videos_to_dl,
-                        title=video_title,
-                    )
-                )
-                completed_count += 1
             else:
-                # Download failed or file not found
-                error_msg_final = error_msg or "No file found after download"
-                update_video_status_in_playlist(
-                    playlist_workspace, video_id, "failed", error_msg_final
-                )
+                # Update existing status with any new entries that might be missing
+                videos_status = existing_status.get("videos", {})
+                for entry in playlist_entries:
+                    video_id = entry.get("id", "")
+                    if video_id and video_id not in videos_status:
+                        # Add missing video entry
+                        videos_status[video_id] = {
+                            "title": entry.get("title", "Unknown"),
+                            "url": entry.get("url", ""),
+                            "status": "pending",
+                            "downloaded_at": None,
+                            "error": None,
+                        }
+                # Save updated status
+                save_playlist_status(playlist_workspace, existing_status)
 
-                failure_message = t(
-                    "playlist_video_failed",
+            # Record download attempt
+            # Get title_pattern from session state (set in UI)
+            title_pattern = st.session_state.get(
+                "playlist_title_pattern", DEFAULT_PLAYLIST_TITLE_PATTERN
+            )
+            add_playlist_download_attempt(
+                playlist_workspace=playlist_workspace,
+                custom_title=playlist_name,
+                playlist_location=video_subfolder,
+                title_pattern=title_pattern,
+            )
+
+            # Mark already downloaded videos as skipped
+            playlist_already_downloaded = st.session_state.get(
+                "playlist_already_downloaded", []
+            )
+            for entry in playlist_already_downloaded:
+                video_id = entry.get("id", "")
+                if video_id:
+                    mark_video_as_skipped(playlist_workspace, video_id)
+
+            # Download each video in the playlist
+            initial_completed_count = len(playlist_already_downloaded)
+            completed_count = initial_completed_count
+            failed_count = 0
+
+            # Get the title pattern from session state
+            title_pattern = st.session_state.get(
+                "playlist_title_pattern", DEFAULT_PLAYLIST_TITLE_PATTERN
+            )
+
+            for idx, entry in enumerate(playlist_to_download, 1):
+                video_id = entry.get("id", "")
+                video_title = entry.get("title", f"Video {idx}")
+                video_url = entry.get("url", "")
+                # Get playlist index (1-based position in original playlist)
+                playlist_index = entry.get("playlist_index", idx)
+
+                if not video_url and video_id:
+                    video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+                downloads_total = max(videos_to_dl, 1)
+                session_current = idx
+                playlist_position = playlist_index or (initial_completed_count + idx)
+                playlist_note = ""
+                if total_videos:
+                    playlist_note = t(
+                        "playlist_position_note",
+                        current=playlist_position,
+                        total=total_videos,
+                    )
+
+                push_log("")
+                download_message = t(
+                    "playlist_downloading_video",
                     current=session_current,
                     total=videos_to_dl,
                     title=video_title,
                 )
-                push_log(failure_message)
+                log_title(download_message)
+                if playlist_note:
+                    push_log(playlist_note)
 
-                status_details = failure_message
-                if error_msg_final:
-                    reason_text = t(
-                        "playlist_video_failure_reason", reason=error_msg_final
+                # Update status
+                update_video_status_in_playlist(
+                    playlist_workspace, video_id, "downloading"
+                )
+                status_message = download_message
+                if playlist_note:
+                    status_message = f"{download_message}\n{playlist_note}"
+                status_placeholder.info(status_message)
+
+                # Update progress
+                raw_progress = (session_current - 1) / downloads_total
+                progress_percent = min(max(raw_progress, 0.0), 1.0)
+                progress_placeholder.progress(progress_percent)
+
+                # Create video workspace (videos are stored separately, not inside playlist)
+                # This ensures the same video is never downloaded twice
+                video_workspace = ensure_video_workspace(
+                    TMP_DOWNLOAD_FOLDER, "youtube", video_id
+                )
+
+                # Use the reusable video download function (same as single videos)
+                base_output = sanitize_filename(video_title)
+                do_cut_video = False  # No cutting for individual playlist videos
+                subs_selected_video = subs_selected  # Use playlist subtitle settings
+                force_mp4_video = False
+                ytdlp_custom_args_video = st.session_state.get("ytdlp_custom_args", "")
+
+                # Download the video using the reusable function
+                ret_dl, final_tmp, error_msg = download_single_video(
+                    video_url=video_url,
+                    video_id=video_id,
+                    video_title=video_title,
+                    video_workspace=video_workspace,
+                    base_output=base_output,
+                    embed_chapters=embed_chapters,
+                    embed_subs=embed_subs,
+                    force_mp4=force_mp4_video,
+                    ytdlp_custom_args=ytdlp_custom_args_video,
+                    do_cut=do_cut_video,
+                    subs_selected=subs_selected_video,
+                    sb_choice=sb_choice,
+                    requested_format_id=None,  # Auto mode for playlists
+                    progress_placeholder=progress_placeholder,
+                    status_placeholder=status_placeholder,
+                    info_placeholder=info_placeholder,
+                )
+
+                # Handle cancellation
+                if ret_dl == -1:
+                    push_log("⚠️ Download cancelled by user")
+                    st.session_state.download_finished = True
+                    st.stop()
+
+                # Process result
+                if ret_dl == 0 and final_tmp and final_tmp.exists():
+                    # Render the final filename using the pattern
+                    ext = final_tmp.suffix.lstrip(".")  # Remove leading dot
+                    playlist_channel = st.session_state.get("playlist_channel", "")
+                    resolved_title = render_title(
+                        title_pattern,
+                        i=playlist_index,
+                        title=video_title,
+                        video_id=video_id,
+                        ext=ext,
+                        total=total_videos,
+                        channel=playlist_channel,
                     )
-                    push_log(reason_text)
-                    status_details = f"{failure_message}\n{reason_text}"
 
-                if status_placeholder:
-                    status_placeholder.error(status_details)
+                    # Move to playlist destination with rendered title (saves disk space)
+                    dest_file = playlist_dest / resolved_title
+                    move_final_to_destination(final_tmp, dest_file, push_log)
 
-                failed_count += 1
+                    # Update playlist status to mark video as completed
+                    # Include pattern info for future reference
+                    update_video_status_in_playlist(
+                        playlist_workspace,
+                        video_id,
+                        "completed",
+                        extra_data={
+                            "title_pattern": title_pattern,
+                            "resolved_title": resolved_title,
+                            "playlist_index": playlist_index,
+                        },
+                    )
+                    push_log(
+                        t(
+                            "playlist_video_completed",
+                            current=session_current,
+                            total=videos_to_dl,
+                            title=video_title,
+                        )
+                    )
+                    completed_count += 1
+                else:
+                    # Download failed or file not found
+                    error_msg_final = error_msg or "No file found after download"
+                    update_video_status_in_playlist(
+                        playlist_workspace, video_id, "failed", error_msg_final
+                    )
 
-        # Final summary
+                    failure_message = t(
+                        "playlist_video_failed",
+                        current=session_current,
+                        total=videos_to_dl,
+                        title=video_title,
+                    )
+                    push_log(failure_message)
+
+                    status_details = failure_message
+                    if error_msg_final:
+                        reason_text = t(
+                            "playlist_video_failure_reason", reason=error_msg_final
+                        )
+                        push_log(reason_text)
+                        status_details = f"{failure_message}\n{reason_text}"
+
+                    if status_placeholder:
+                        status_placeholder.error(status_details)
+
+                    failed_count += 1
+
+            # Final summary
+            push_log("")
+            log_title("📊 PLAYLIST DOWNLOAD COMPLETE")
+            push_log(
+                t(
+                    "playlist_download_complete",
+                    completed=completed_count,
+                    total=total_videos,
+                )
+            )
+            if failed_count > 0:
+                push_log(f"⚠️ {failed_count} video(s) failed")
+
+            # Final progress
+            progress_placeholder.progress(1.0, text=t("status_completed"))
+            status_placeholder.success(
+                t(
+                    "playlist_copy_complete",
+                    copied=completed_count - len(playlist_already_downloaded),
+                    folder=playlist_name,
+                )
+            )
+            # Trigger media-server integrations
+            post_download_actions(safe_push_log, log_title)
+
+            st.toast(t("toast_download_completed"), icon="✅")
+            st.session_state.download_finished = True
+            st.stop()
+
+        # === SINGLE VIDEO DOWNLOAD MODE (existing logic continues below) ===
+
+        # Check if video already exists in destination (safety check)
+        if filename:
+            # Check all common video extensions
+            existing_files = []
+            for ext in [".mkv", ".mp4", ".webm", ".avi", ".mov"]:
+                potential_file = dest_dir / f"{filename}{ext}"
+                if potential_file.exists():
+                    existing_files.append(potential_file)
+
+            if existing_files and not settings.ALLOW_OVERWRITE_EXISTING_VIDEO:
+                # File exists and overwrite is not allowed
+                log_title("⚠️ VIDEO ALREADY EXISTS - SKIPPING DOWNLOAD")
+                push_log("")
+                push_log(f"📁 Existing file: {existing_files[0].name}")
+                push_log(
+                    f"📊 File size: {existing_files[0].stat().st_size / (1024 * 1024):.2f}MiB"
+                )
+                push_log("")
+                push_log("🛡️ Protection active: ALLOW_OVERWRITE_EXISTING_VIDEO=false")
+                push_log(
+                    "ℹ️  To allow overwrites, set ALLOW_OVERWRITE_EXISTING_VIDEO=true in .env"
+                )
+                push_log("")
+                push_log("✅ Skipping download to protect existing file")
+
+                status_placeholder.warning(
+                    t("existing_file_skip_warning", filename=existing_files[0].name)
+                )
+
+                # Mark download as finished
+                st.session_state.download_finished = True
+                st.stop()  # Stop execution here
+
+        # build bases
+        clean_url = sanitize_url(url)
+
+        # Get unique temporary folder from session state (set during url_analysis)
+        # This ensures each URL (video/playlist) has its own isolated workspace
+        tmp_url_workspace = st.session_state.get("tmp_url_workspace")
+        unique_folder_name = st.session_state.get("unique_folder_name", "unknown")
+
+        if not tmp_url_workspace:
+            st.error(t("error_video_workspace_not_initialized"))
+            st.stop()
+
+        # For now, tmp_video_dir points to the same location as tmp_url_workspace
+        # In the future, for playlists, each video will have its own subdirectory within tmp_url_workspace
+        tmp_video_dir = tmp_url_workspace
+
+        # All temporary files are written to the root of the unique URL workspace folder
+        # The video_subfolder is only used when copying the final file to destination
+        push_log(f"🔧 Unique URL workspace: {unique_folder_name}")
+        push_log(t("log_temp_download_folder", folder=tmp_url_workspace))
+
+        # Setup cookies for yt-dlp operations
+        cookies_part = build_cookies_params(clean_url)
+
+        # If no filename provided, get video title
+        if filename is None:
+            filename = get_video_title(clean_url, cookies_part)
+
+        base_output = filename  # without extension
+
+        # Get requested format ID from chosen profiles (if user selected a specific format)
+        requested_format_id = None
+        chosen_format_profiles = st.session_state.get("chosen_format_profiles", [])
+        if chosen_format_profiles:
+            requested_format_id = chosen_format_profiles[0].get("format_id")
+
+        # Record this download attempt in status.json
+        add_download_attempt(
+            tmp_url_workspace=tmp_url_workspace,
+            custom_title=filename,
+            video_location=video_subfolder,
+            requested_format_id=requested_format_id,
+        )
+    except (StopException, RerunException):
+        raise
+    except Exception as exc:
+        user_error = format_download_start_error(exc)
         push_log("")
-        log_title("📊 PLAYLIST DOWNLOAD COMPLETE")
-        push_log(
-            t(
-                "playlist_download_complete",
-                completed=completed_count,
-                total=total_videos,
-            )
-        )
-        if failed_count > 0:
-            push_log(f"⚠️ {failed_count} video(s) failed")
-
-        # Final progress
-        progress_placeholder.progress(1.0, text=t("status_completed"))
-        status_placeholder.success(
-            t(
-                "playlist_copy_complete",
-                copied=completed_count - len(playlist_already_downloaded),
-                folder=playlist_name,
-            )
-        )
-
-        # Trigger media-server integrations
-        post_download_actions(safe_push_log, log_title)
-
-        st.toast(t("toast_download_completed"), icon="✅")
+        push_log(f"❌ {user_error}")
+        status_placeholder.error(user_error)
+        st.error(user_error)
         st.session_state.download_finished = True
         st.stop()
-
-    # === SINGLE VIDEO DOWNLOAD MODE (existing logic continues below) ===
-
-    # Check if video already exists in destination (safety check)
-    if filename:
-        # Check all common video extensions
-        existing_files = []
-        for ext in [".mkv", ".mp4", ".webm", ".avi", ".mov"]:
-            potential_file = dest_dir / f"{filename}{ext}"
-            if potential_file.exists():
-                existing_files.append(potential_file)
-
-        if existing_files and not settings.ALLOW_OVERWRITE_EXISTING_VIDEO:
-            # File exists and overwrite is not allowed
-            log_title("⚠️ VIDEO ALREADY EXISTS - SKIPPING DOWNLOAD")
-            push_log("")
-            push_log(f"📁 Existing file: {existing_files[0].name}")
-            push_log(
-                f"📊 File size: {existing_files[0].stat().st_size / (1024 * 1024):.2f}MiB"
-            )
-            push_log("")
-            push_log("🛡️ Protection active: ALLOW_OVERWRITE_EXISTING_VIDEO=false")
-            push_log(
-                "ℹ️  To allow overwrites, set ALLOW_OVERWRITE_EXISTING_VIDEO=true in .env"
-            )
-            push_log("")
-            push_log("✅ Skipping download to protect existing file")
-
-            status_placeholder.warning(
-                t("existing_file_skip_warning", filename=existing_files[0].name)
-            )
-
-            # Mark download as finished
-            st.session_state.download_finished = True
-            st.stop()  # Stop execution here
-
-    # build bases
-    clean_url = sanitize_url(url)
-
-    # Get unique temporary folder from session state (set during url_analysis)
-    # This ensures each URL (video/playlist) has its own isolated workspace
-    tmp_url_workspace = st.session_state.get("tmp_url_workspace")
-    unique_folder_name = st.session_state.get("unique_folder_name", "unknown")
-
-    if not tmp_url_workspace:
-        st.error(t("error_video_workspace_not_initialized"))
-        st.stop()
-
-    # For now, tmp_video_dir points to the same location as tmp_url_workspace
-    # In the future, for playlists, each video will have its own subdirectory within tmp_url_workspace
-    tmp_video_dir = tmp_url_workspace
-
-    # All temporary files are written to the root of the unique URL workspace folder
-    # The video_subfolder is only used when copying the final file to destination
-    push_log(f"🔧 Unique URL workspace: {unique_folder_name}")
-    push_log(t("log_temp_download_folder", folder=tmp_url_workspace))
-
-    # Setup cookies for yt-dlp operations
-    cookies_part = build_cookies_params(clean_url)
-
-    # If no filename provided, get video title
-    if filename is None:
-        filename = get_video_title(clean_url, cookies_part)
-
-    base_output = filename  # without extension
-
-    # Get requested format ID from chosen profiles (if user selected a specific format)
-    requested_format_id = None
-    chosen_format_profiles = st.session_state.get("chosen_format_profiles", [])
-    if chosen_format_profiles:
-        requested_format_id = chosen_format_profiles[0].get("format_id")
-
-    # Record this download attempt in status.json
-    add_download_attempt(
-        tmp_url_workspace=tmp_url_workspace,
-        custom_title=filename,
-        video_location=video_subfolder,
-        requested_format_id=requested_format_id,
-    )
 
     # Log download strategy
     push_log("")

@@ -114,6 +114,26 @@ def is_valid_browser(browser: str) -> bool:
 # === DIRECTORY OPERATIONS ===
 
 
+class PathAccessError(RuntimeError):
+    """Raised when HomeTube cannot access a required filesystem path."""
+
+    def __init__(self, path: Path, original_error: OSError):
+        self.path = path
+        self.original_error = original_error
+        super().__init__(f"{original_error.__class__.__name__}: {path} ({original_error})")
+
+
+def classify_path_access_error(error: PathAccessError) -> tuple[str, dict]:
+    """Map a path access error to a translation key and formatting kwargs."""
+    if isinstance(error.original_error, PermissionError):
+        return "error_path_permission_denied", {"path": error.path}
+
+    return "error_path_operation_failed", {
+        "path": error.path,
+        "error": error.original_error,
+    }
+
+
 def list_subdirs_recursive(root: Path, max_depth: int = 2) -> list[str]:
     """
     List subdirectories recursively up to max_depth levels.
@@ -152,7 +172,10 @@ def list_subdirs_recursive(root: Path, max_depth: int = 2) -> list[str]:
 
 def ensure_dir(path: Path) -> None:
     """Create directory and all parent directories if they don't exist"""
-    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise PathAccessError(path, exc) from exc
 
 
 # === FILE OPERATIONS ===

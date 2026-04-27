@@ -132,6 +132,47 @@ class TestRemoveTmpFilesConfig:
         assert result == settings.REMOVE_TMP_FILES_AFTER_DOWNLOAD
 
 
+class TestDirectoryErrors:
+    """Test user-facing directory error wrapping."""
+
+    def test_ensure_dir_wraps_permission_error_with_path_context(
+        self, tmp_path, monkeypatch
+    ):
+        """Permission errors should be wrapped with path information."""
+        import pytest
+        from pathlib import Path
+
+        from app.file_system_utils import PathAccessError, ensure_dir
+
+        target = tmp_path / "protected"
+
+        def fake_mkdir(self, parents=False, exist_ok=False):
+            raise PermissionError(13, "Permission denied", str(self))
+
+        monkeypatch.setattr(Path, "mkdir", fake_mkdir)
+
+        with pytest.raises(PathAccessError) as exc_info:
+            ensure_dir(target)
+
+        assert exc_info.value.path == target
+        assert isinstance(exc_info.value.original_error, PermissionError)
+
+    def test_classify_path_access_error_for_permission_denied(self, tmp_path):
+        """Permission errors should map to the dedicated UI error key."""
+        from app.file_system_utils import PathAccessError, classify_path_access_error
+
+        target = tmp_path / "destination"
+        error = PathAccessError(
+            target,
+            PermissionError(13, "Permission denied", str(target)),
+        )
+
+        key, kwargs = classify_path_access_error(error)
+
+        assert key == "error_path_permission_denied"
+        assert kwargs["path"] == target
+
+
 class TestMoveFinalToDestination:
     """Test move_final_to_destination function for disk space optimization"""
 
