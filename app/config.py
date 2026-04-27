@@ -8,9 +8,11 @@ Provides type-safe access to settings with proper defaults and validation.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from dataclasses import dataclass
 from functools import lru_cache
+from collections.abc import MutableMapping
 
 
 # === Container Detection ===
@@ -20,6 +22,45 @@ def in_container() -> bool:
 
 
 IN_CONTAINER = in_container()
+
+
+def ensure_runtime_bin_on_path(
+    executable: str | None = None,
+    env: MutableMapping[str, str] | None = None,
+) -> str:
+    """
+    Ensure the current Python interpreter's bin directory is present in PATH.
+
+    This is required when HomeTube is launched directly with the venv's Python
+    executable, because child subprocesses like `yt-dlp` are installed as
+    console scripts next to that interpreter but that directory is not always
+    inherited in PATH.
+
+    Args:
+        executable: Python executable path to derive bin dir from.
+        env: Environment mapping to mutate. Defaults to os.environ.
+
+    Returns:
+        The bin directory that was checked/added.
+    """
+    env = os.environ if env is None else env
+    executable = executable or sys.executable
+    # Keep the launcher directory instead of resolving symlinks so that
+    # virtualenv console scripts (e.g. .venv/bin/yt-dlp) remain discoverable.
+    bin_dir = str(Path(executable).expanduser().absolute().parent)
+
+    current_path = env.get("PATH", "")
+    path_parts = current_path.split(os.pathsep) if current_path else []
+
+    if bin_dir not in path_parts:
+        env["PATH"] = (
+            f"{bin_dir}{os.pathsep}{current_path}" if current_path else bin_dir
+        )
+
+    return bin_dir
+
+
+ensure_runtime_bin_on_path()
 
 
 # === YouTube Client Fallback Chain ===

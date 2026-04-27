@@ -7,6 +7,8 @@ This module tests:
 - Other settings behavior
 """
 
+import os
+
 
 class TestJellyfinSettings:
     """Tests for Jellyfin-related configuration."""
@@ -191,3 +193,35 @@ class TestSubtitleLanguageConfiguration:
             "es",
             "de",
         ], "Secondaries should follow in order"
+
+
+class TestRuntimeCommandPath:
+    """Tests for runtime PATH normalization."""
+
+    def test_adds_python_bin_dir_to_path_when_missing(self):
+        """Current Python's bin dir should be prepended when PATH misses it."""
+        from app.config import ensure_runtime_bin_on_path
+
+        env = {"PATH": "/usr/bin:/bin"}
+
+        added_dir = ensure_runtime_bin_on_path(
+            executable="/tmp/hometube-venv/bin/python",
+            env=env,
+        )
+
+        assert added_dir == "/tmp/hometube-venv/bin"
+        assert env["PATH"] == "/tmp/hometube-venv/bin:/usr/bin:/bin"
+
+    def test_does_not_duplicate_python_bin_dir_in_path(self):
+        """Current Python's bin dir should not be duplicated in PATH."""
+        from app.config import ensure_runtime_bin_on_path
+
+        env = {"PATH": "/tmp/hometube-venv/bin:/usr/bin:/bin"}
+
+        added_dir = ensure_runtime_bin_on_path(
+            executable="/tmp/hometube-venv/bin/python",
+            env=env,
+        )
+
+        assert added_dir == "/tmp/hometube-venv/bin"
+        assert env["PATH"] == "/tmp/hometube-venv/bin:/usr/bin:/bin"

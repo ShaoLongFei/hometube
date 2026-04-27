@@ -110,9 +110,8 @@ cd hometube
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-# Install dependencies
-pip install -e .
-pip install -e ".[test]"
+# Install dependencies, including local yt-dlp
+pip install -e ".[local,test]"
 
 # Run tests
 make test
@@ -135,9 +134,8 @@ cp .env.sample .env
 conda create -n hometube python=3.11
 conda activate hometube
 
-# Install dependencies
-pip install -e .
-pip install -e ".[test]"
+# Install dependencies, including local yt-dlp
+pip install -e ".[local,test]"
 
 # Run tests
 make test

@@ -25,8 +25,8 @@ cp .env.sample .env
 
 # Install UV if needed: curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Sync dependencies
-uv sync
+# Sync dependencies, including local yt-dlp
+uv sync --extra local
 
 # Verify setup
 make test
@@ -61,7 +61,7 @@ cp .env.sample .env
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
-# Install dependencies
+# Install dependencies (includes local yt-dlp)
 pip install -r requirements/requirements-dev.txt
 
 # Verify setup

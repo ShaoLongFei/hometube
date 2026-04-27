@@ -84,12 +84,12 @@ sync-deps:
 	# Ensure requirements directory exists
 	mkdir -p requirements
 	
-	# Generate requirements.txt from pyproject.toml (production dependencies)
-	uv pip compile pyproject.toml -o requirements/requirements.txt
+	# Generate requirements.txt from pyproject.toml (local runtime dependencies)
+	uv pip compile pyproject.toml --extra local -o requirements/requirements.txt
 	@echo "📦 Updated requirements/requirements.txt"
-	
-	# Generate requirements-dev.txt from pyproject.toml (with dev dependencies)
-	uv pip compile pyproject.toml --extra dev -o requirements/requirements-dev.txt
+
+	# Generate requirements-dev.txt from pyproject.toml (local runtime + dev dependencies)
+	uv pip compile pyproject.toml --extra local --extra dev -o requirements/requirements-dev.txt
 	@echo "🛠️ Updated requirements/requirements-dev.txt"
 	
 	# Note: environment.yml needs manual sync when adding system deps

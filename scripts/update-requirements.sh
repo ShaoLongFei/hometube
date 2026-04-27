@@ -7,13 +7,13 @@ echo "🔄 Updating dependencies with UV..."
 echo "📦 Updating lockfile..."
 uv lock --upgrade
 
-# Regenerate production requirements.txt
+# Regenerate local runtime requirements.txt
 echo "📝 Generating requirements.txt..."
-uv pip compile pyproject.toml -o requirements/requirements.txt
+uv pip compile pyproject.toml --extra local -o requirements/requirements.txt
 
 # Regenerate requirements-dev.txt
 echo "🛠️ Generating requirements-dev.txt..."
-uv pip compile pyproject.toml --extra dev -o requirements/requirements-dev.txt
+uv pip compile pyproject.toml --extra local --extra dev -o requirements/requirements-dev.txt
 
 echo "✅ Requirements files updated!"
 echo ""
