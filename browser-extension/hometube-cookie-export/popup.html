@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>HomeTube Cookie Export</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 12px;
+        width: 340px;
+      }
+
+      button {
+        width: 100%;
+        padding: 10px 12px;
+        border: 0;
+        border-radius: 8px;
+        background: #2563eb;
+        color: white;
+        cursor: pointer;
+        font-weight: 600;
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 150px;
+        margin-top: 10px;
+        font-family: monospace;
+        font-size: 12px;
+      }
+
+      .status {
+        margin-top: 10px;
+        font-size: 12px;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <button id="copy-cookies">Copy Active Site Cookies</button>
+    <div id="status" class="status">Open the site you want cookies for, then click the button.</div>
+    <textarea id="cookies-output" readonly placeholder="Exported cookies will appear here."></textarea>
+    <script src="popup.js"></script>
+  </body>
+</html>

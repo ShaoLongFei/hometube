@@ -96,6 +96,7 @@ _DEFAULTS = {
     # === Authentication ===
     "YOUTUBE_COOKIES_FILE_PATH": "",
     "COOKIES_FROM_BROWSER": "",
+    "MANAGED_COOKIES_FOLDER": "/config/site_cookies" if IN_CONTAINER else "./cookies/sites",
     # === Localization ===
     "UI_LANGUAGE": "en",
     # === Audio Language Preferences ===
@@ -158,6 +159,7 @@ class Settings:
     TMP_DOWNLOAD_FOLDER: Path
     YOUTUBE_COOKIES_FILE_PATH: str | None
     COOKIES_FROM_BROWSER: str
+    MANAGED_COOKIES_FOLDER: Path
 
     # Localization
     UI_LANGUAGE: str
@@ -230,6 +232,10 @@ def get_settings() -> Settings:
     if not cookies_path:
         cookies_path = None
 
+    managed_cookies_folder = Path(config["MANAGED_COOKIES_FOLDER"])
+    if not managed_cookies_folder.is_absolute():
+        managed_cookies_folder = (project_root / managed_cookies_folder).resolve()
+
     # 3️⃣ Parse lists and booleans
     languages_secondaries = _to_list(config["LANGUAGES_SECONDARIES"])
 
@@ -238,6 +244,7 @@ def get_settings() -> Settings:
         TMP_DOWNLOAD_FOLDER=tmp_folder,
         YOUTUBE_COOKIES_FILE_PATH=cookies_path,
         COOKIES_FROM_BROWSER=config["COOKIES_FROM_BROWSER"].strip().lower(),
+        MANAGED_COOKIES_FOLDER=managed_cookies_folder,
         UI_LANGUAGE=config["UI_LANGUAGE"],
         LANGUAGE_PRIMARY=config["LANGUAGE_PRIMARY"].strip().lower(),
         LANGUAGES_SECONDARIES=languages_secondaries,

@@ -7,6 +7,7 @@ from pathlib import Path
 
 # Third-party imports
 import streamlit as st
+import streamlit.components.v1 as components
 
 # HomeTube imports (using absolute imports for consistency)
 from app.constants import (
@@ -16,7 +17,6 @@ from app.constants import (
     FRAGMENT_PROGRESS_PATTERN,
     GENERIC_PERCENTAGE_PATTERN,
     LOGS_CONTAINER_STYLE,
-    SUPPORTED_BROWSERS,
 )
 from app.translations import t, configure_language
 from app.core import (
@@ -35,6 +35,12 @@ from app.file_system_utils import (
     cleanup_tmp_files,
     move_final_to_destination,
 )
+from app.site_cookies import (
+    build_site_cookies_params,
+    delete_site_cookies_file,
+    list_saved_site_cookies,
+    save_cookies_text_by_site,
+)
 from app.workspace import (
     parse_url as parse_url_info,
     ensure_workspace_from_url,
@@ -47,6 +53,7 @@ from app.display_utils import (
     build_info_items,
     render_media_card,
 )
+from app.extension_bundle import build_extension_zip_bytes
 from app.medias_utils import (
     analyze_audio_formats,
     get_profiles_with_formats_id_to_download,
@@ -424,12 +431,8 @@ def smart_download_with_profiles(
     log_title("🎯 Starting profile-based download...")
 
     # Setup cookies (compact)
-    cookies_available = False
-    cookies_part = []
-    cookies_method = st.session_state.get("cookies_method", "none")
-    if cookies_method != "none":
-        cookies_part = build_cookies_params()
-        cookies_available = len(cookies_part) > 0
+    cookies_part = build_cookies_params(url)
+    cookies_available = len(cookies_part) > 0
 
     # Reset session-based message suppression for new download
     session_keys_to_reset = ["auth_hint_shown_this_download", "po_token_warning_shown"]
@@ -999,7 +1002,7 @@ def init_url_workspace(
     """
     # Build cookies parameters from config (important to avoid bot detection)
     # Use config-based cookies since session_state may not be available yet
-    cookies_params = build_cookies_params_from_config()
+    cookies_params = build_cookies_params_from_config(clean_url)
 
     # Download and build url_info with integrity checks
     info = build_url_info(
@@ -1158,7 +1161,7 @@ def initialize_video_workspace(
     # If url_info.json doesn't exist, fetch it
     if not video_url_info:
         safe_push_log(f"📋 Fetching url_info.json for {video_title}...")
-        cookies_params = build_cookies_params_from_config()
+        cookies_params = build_cookies_params_from_config(video_url)
 
         video_url_info = build_url_info(
             clean_url=video_url,
@@ -1853,13 +1856,18 @@ def get_tmp_video_dir() -> Path | None:
     return st.session_state.get("tmp_url_workspace")
 
 
-def build_cookies_params() -> list[str]:
+def build_cookies_params(url: str | None = None) -> list[str]:
     """
     Builds cookie parameters based on user selection.
 
     Returns:
         list: yt-dlp parameters for cookies
     """
+    managed_result = build_site_cookies_params(url or "")
+    if "--cookies" in managed_result:
+        safe_push_log(f"🍪 Using managed site cookies for URL: {url}")
+        return managed_result
+
     cookies_method = st.session_state.get("cookies_method", "none")
 
     if cookies_method == "file":
@@ -1892,7 +1900,7 @@ def build_cookies_params() -> list[str]:
         return result
 
 
-def build_cookies_params_from_config() -> list[str]:
+def build_cookies_params_from_config(url: str | None = None) -> list[str]:
     """
     Builds cookie parameters from configuration settings (for early URL analysis).
     Used before session_state is available.
@@ -1900,6 +1908,10 @@ def build_cookies_params_from_config() -> list[str]:
     Returns:
         list: yt-dlp parameters for cookies
     """
+    managed_result = build_site_cookies_params(url or "")
+    if "--cookies" in managed_result:
+        return managed_result
+
     # Try cookies file first (most common for Docker/server setup)
     if YOUTUBE_COOKIES_FILE_PATH and Path(YOUTUBE_COOKIES_FILE_PATH).exists():
         return core_build_cookies_params(
@@ -2770,7 +2782,7 @@ with st.expander(f"{t('ads_sponsors_title')}", expanded=False):
         with st.spinner("🔍 Analyzing video for sponsor segments..."):
             try:
                 # Get cookies for yt-dlp - use centralized function
-                cookies_part = build_cookies_params()
+                cookies_part = build_cookies_params(url)
 
                 # Detect all sponsor segments
                 clean_url = sanitize_url(url)
@@ -3046,115 +3058,123 @@ with st.expander(t("cookies_title"), expanded=False):
             st.session_state["cookies_expired"] = False
             st.rerun()
 
-    st.info(t("cookies_presentation"))
-
-    # Determine default cookie method based on available options
-    def get_default_cookie_method():
-        # Check if cookies file exists and is valid
-        if is_valid_cookie_file(YOUTUBE_COOKIES_FILE_PATH):
-            return "file"
-
-        # Check if browser is configured
-        if is_valid_browser(COOKIES_FROM_BROWSER):
-            return "browser"
-
-        # Default to no cookies
-        return "none"
-
-    # Initialize session state for cookies method
-    if "cookies_method" not in st.session_state:
-        st.session_state.cookies_method = get_default_cookie_method()
-
-    cookies_method = st.radio(
-        t("cookies_method_prompt"),
-        options=["file", "browser", "none"],
-        format_func=lambda x: {
-            "file": t("cookies_method_file"),
-            "browser": t("cookies_method_browser"),
-            "none": t("cookies_method_none"),
-        }[x],
-        index=["file", "browser", "none"].index(st.session_state.cookies_method),
-        help=t("cookies_method_help"),
-        key="cookies_method_radio",
-        horizontal=True,
+    st.info(
+        "Use the Chromium companion extension to export cookies for the site "
+        "you are currently browsing, then paste the exported Netscape cookies "
+        "text below. HomeTube will automatically split and save one cookies "
+        "file per primary domain."
     )
 
-    # Update session state
-    st.session_state.cookies_method = cookies_method
+    extension_dir = (
+        Path(__file__).resolve().parent.parent
+        / "browser-extension"
+        / "hometube-cookie-export"
+    )
+    extension_zip_bytes = build_extension_zip_bytes(extension_dir)
 
-    # Show details based on selected method
-    if cookies_method == "file":
-        st.markdown("**📁 File-based cookies:**")
-        if is_valid_cookie_file(YOUTUBE_COOKIES_FILE_PATH):
-            try:
-                file_stat = os.stat(YOUTUBE_COOKIES_FILE_PATH)
-                file_size = file_stat.st_size
-                mod_time = time.strftime(
-                    "%Y-%m-%d %H:%M:%S", time.localtime(file_stat.st_mtime)
-                )
-                st.success(f"✅ Cookies file found: `{YOUTUBE_COOKIES_FILE_PATH}`")
-                st.info(f"📊 Size: {file_size:,} bytes | 📅 Modified: {mod_time}")
-            except Exception as e:
-                st.error(f"❌ Error reading cookies file: {e}")
+    components.html(
+        """
+        <div id="hometube-extension-status" style="font-family: sans-serif; border: 1px solid #2f3640; border-radius: 12px; padding: 14px; background: #0f172a; color: #e2e8f0; overflow: hidden; box-sizing: border-box; min-height: 132px;">
+          <div style="font-weight: 600; margin-bottom: 8px;">Chromium Extension Status</div>
+          <div id="status-line">Checking for HomeTube Cookie Export extension…</div>
+          <div id="status-help" style="margin-top: 8px; padding-bottom: 6px; font-size: 0.92em; color: #cbd5e1; line-height: 1.45;"></div>
+        </div>
+        <script>
+          const statusLine = document.getElementById("status-line");
+          const statusHelp = document.getElementById("status-help");
+          let detected = false;
+
+          function renderInstalled(version) {
+            statusLine.textContent = `Installed${version ? ` · v${version}` : ""}`;
+            statusHelp.textContent = "Open the site you want cookies for, click the extension icon, copy the exported cookies, then paste them back into HomeTube below.";
+          }
+
+          function renderMissing() {
+            statusLine.textContent = "Not installed";
+            statusHelp.textContent = "Install the unpacked extension from browser-extension/hometube-cookie-export in your HomeTube checkout: open chrome://extensions, enable Developer Mode, click Load unpacked, then select that folder.";
+          }
+
+          window.addEventListener("message", (event) => {
+            if (event.data && event.data.type === "HOMETUBE_EXTENSION_PONG") {
+              detected = true;
+              renderInstalled(event.data.version || "");
+            }
+          });
+
+          window.parent.postMessage({ type: "HOMETUBE_EXTENSION_PING" }, "*");
+          setTimeout(() => {
+            if (!detected) {
+              renderMissing();
+            }
+          }, 1200);
+        </script>
+        """,
+        height=170,
+    )
+
+    st.download_button(
+        "Download Extension ZIP",
+        data=extension_zip_bytes,
+        file_name="hometube-cookie-export.zip",
+        mime="application/zip",
+        key="download_hometube_extension_zip",
+        help="Download the unpacked Chromium extension bundle as a ZIP file.",
+    )
+    st.caption(
+        "Install path: download ZIP → unzip it anywhere on your computer → open "
+        "`chrome://extensions` → enable Developer mode → click `Load unpacked` "
+        "→ select the unzipped `hometube-cookie-export` folder."
+    )
+
+    st.caption(f"Managed cookies folder: `{settings.MANAGED_COOKIES_FOLDER}`")
+
+    pasted_cookies_text = st.text_area(
+        "Paste extension-exported cookies text",
+        value="",
+        placeholder=(
+            "# Netscape HTTP Cookie File\n"
+            ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\t..."
+        ),
+        height=220,
+        key="managed_site_cookies_text",
+    )
+
+    if st.button("Parse and Save Cookies", key="save_managed_site_cookies"):
+        try:
+            saved_sites = save_cookies_text_by_site(pasted_cookies_text)
+        except ValueError as exc:
+            st.error(f"Could not import cookies: {exc}")
+        except Exception as exc:
+            st.error(f"Unexpected error while saving cookies: {exc}")
         else:
-            if YOUTUBE_COOKIES_FILE_PATH:
-                st.error(f"❌ Cookies file not found: `{YOUTUBE_COOKIES_FILE_PATH}`")
-            else:
-                st.error("❌ No cookies file path configured in environment variables")
-            st.info(
-                "💡 Set YOUTUBE_COOKIES_FILE_PATH environment variable or export "
-                "cookies from your browser using an extension like 'Get cookies.txt'"
-            )
+            site_list = ", ".join(sorted(saved_sites.keys()))
+            st.session_state["cookies_method"] = "file"
+            st.success(f"Saved site cookies for: {site_list}")
+            st.rerun()
 
-    elif cookies_method == "browser":
-        st.markdown("**🌐 Browser-based cookies:**")
+    saved_site_cookies = list_saved_site_cookies()
+    st.session_state["cookies_method"] = "file" if saved_site_cookies else "none"
 
-        # Get default browser from env or default to chrome
-        default_browser = (
-            COOKIES_FROM_BROWSER.strip().lower()
-            if COOKIES_FROM_BROWSER.strip()
-            else "chrome"
-        )
-        if default_browser not in SUPPORTED_BROWSERS:
-            default_browser = "chrome"
-
-        selected_browser = st.selectbox(
-            "Select browser:",
-            options=SUPPORTED_BROWSERS,
-            index=SUPPORTED_BROWSERS.index(default_browser),
-            help="Choose the browser from which to extract cookies",
-            key="browser_select",
-        )
-
-        # Profile selection (optional)
-        browser_profile = st.text_input(
-            "Browser profile (optional):",
-            value="",
-            help="Leave empty for default profile, or specify profile name/path",
-            placeholder="Default, Profile 1, /path/to/profile",
-            key="browser_profile",
-        )
-
-        # Show current configuration
-        browser_config = selected_browser
-        if browser_profile.strip():
-            browser_config = f"{selected_browser}:{browser_profile.strip()}"
-
-        st.info(f"🔧 Will use: `--cookies-from-browser {browser_config}`")
-        st.warning(
-            "⚠️ Make sure your browser is closed or restart it after using this option"
-        )
-
-    else:  # none
-        st.markdown("**🚫 No authentication:**")
-        st.warning("⚠️ Without cookies, you won't be able to download:")
-        st.markdown("""
-        - Age-restricted videos
-        - Member-only content
-        - Some region-restricted videos
-        - Videos requiring sign-in
-        """)
-        st.info("✅ Public videos will work normally")
+    st.markdown("**Saved Site Cookies**")
+    if not saved_site_cookies:
+        st.caption("No managed site cookies saved yet.")
+    else:
+        for entry in saved_site_cookies:
+            site_col, meta_col, action_col = st.columns([2, 3, 1])
+            with site_col:
+                st.markdown(f"`{entry['site']}`")
+            with meta_col:
+                modified_at = time.strftime(
+                    "%Y-%m-%d %H:%M:%S",
+                    time.localtime(entry["modified_at"]),
+                )
+                st.caption(
+                    f"{entry['cookie_count']} cookies · Updated {modified_at}"
+                )
+            with action_col:
+                if st.button("Delete", key=f"delete_site_cookie_{entry['site']}"):
+                    delete_site_cookies_file(entry["site"])
+                    st.rerun()
 
 
 # === ADVANCED OPTIONS ===
@@ -4177,7 +4197,7 @@ if submitted:
     push_log(t("log_temp_download_folder", folder=tmp_url_workspace))
 
     # Setup cookies for yt-dlp operations
-    cookies_part = build_cookies_params()
+    cookies_part = build_cookies_params(clean_url)
 
     # If no filename provided, get video title
     if filename is None:
@@ -4332,7 +4352,7 @@ if submitted:
                 subs_part += ["--no-embed-subs"]  # Separate if user prefers it
 
     # cookies - use new dynamic cookie management
-    cookies_part = build_cookies_params()
+    cookies_part = build_cookies_params(clean_url)
 
     # SponsorBlock configuration
     sb_part = build_sponsorblock_params(sb_choice)

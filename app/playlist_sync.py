@@ -301,6 +301,7 @@ def refresh_playlist_url_info(
     from app.core import build_cookies_params as core_build_cookies_params
     from app.config import get_settings, YOUTUBE_CLIENT_FALLBACKS
     from app.file_system_utils import is_valid_cookie_file, is_valid_browser
+    from app.site_cookies import build_site_cookies_params
     from app.url_utils import build_url_info
 
     safe_push_log("🔄 Refreshing playlist data from YouTube...")
@@ -315,8 +316,11 @@ def refresh_playlist_url_info(
     settings = get_settings()
     cookies_params = []
 
+    managed_cookies_params = build_site_cookies_params(playlist_url)
+    if managed_cookies_params:
+        cookies_params = managed_cookies_params
     # Try cookies file first (most common for Docker/server setup)
-    if settings.YOUTUBE_COOKIES_FILE_PATH and is_valid_cookie_file(
+    elif settings.YOUTUBE_COOKIES_FILE_PATH and is_valid_cookie_file(
         settings.YOUTUBE_COOKIES_FILE_PATH
     ):
         cookies_params = core_build_cookies_params(
