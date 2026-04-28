@@ -18,6 +18,14 @@ _FRAGMENT_PROGRESS_RE = re.compile(
     r"\[download\]\s+Downloading fragment\s+(?P<current>\d+)/(?P<total>\d+)",
     re.IGNORECASE,
 )
+_FFMPEG_OUT_TIME_RE = re.compile(
+    r"out_time_(?:ms|us)=(?P<value>\d+)",
+    re.IGNORECASE,
+)
+_FFMPEG_OUT_TIME_TEXT_RE = re.compile(
+    r"out_time=(?P<value>\d{2}:\d{2}:\d{2}(?:\.\d+)?)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -73,8 +81,46 @@ def _parse_eta_seconds(eta_text: str | None) -> int | None:
     return None
 
 
-def parse_progress_update(line: str) -> ProgressUpdate | None:
+def _format_transcoding_update(percent: float) -> ProgressUpdate:
+    percent = round(min(max(percent, 0.0), 100.0), 1)
+    return ProgressUpdate(
+        progress_percent=percent,
+        status_message=f"Transcoding {percent:.1f}%",
+    )
+
+
+def _parse_ffmpeg_time_seconds(line: str) -> float | None:
+    match = _FFMPEG_OUT_TIME_RE.search(line)
+    if match:
+        return int(match.group("value")) / 1_000_000
+
+    text_match = _FFMPEG_OUT_TIME_TEXT_RE.search(line)
+    if text_match:
+        hours_text, minutes_text, seconds_text = text_match.group("value").split(":")
+        return (
+            int(hours_text) * 3600
+            + int(minutes_text) * 60
+            + float(seconds_text)
+        )
+
+    return None
+
+
+def parse_progress_update(
+    line: str,
+    *,
+    ffmpeg_duration_seconds: float | None = None,
+) -> ProgressUpdate | None:
     """Parse one yt-dlp progress line into a structured update."""
+    if ffmpeg_duration_seconds and line.strip().lower() == "progress=end":
+        return _format_transcoding_update(100.0)
+
+    if ffmpeg_duration_seconds:
+        ffmpeg_time = _parse_ffmpeg_time_seconds(line)
+        if ffmpeg_time is not None:
+            percent = (ffmpeg_time / ffmpeg_duration_seconds) * 100
+            return _format_transcoding_update(percent)
+
     match = _DOWNLOAD_PROGRESS_RE.search(line)
     if match:
         percent = float(match.group("percent"))

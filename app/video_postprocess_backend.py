@@ -257,7 +257,9 @@ def postprocess_video_file(
         normalization = normalize_video_file_fn(
             final_source,
             normalization_output,
+            run_command_fn=run_command_fn,
             runtime_state=state,
+            duration_seconds=inspection.duration_seconds,
         )
         normalization_succeeded = normalization.succeeded
 

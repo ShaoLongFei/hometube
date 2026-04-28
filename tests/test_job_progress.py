@@ -23,3 +23,27 @@ class TestJobProgress:
         assert update.downloaded_bytes is None
         assert update.total_bytes is None
         assert update.status_message == "Downloading fragments"
+
+    def test_parse_ffmpeg_progress_line_estimates_transcoding_percent(self):
+        from app.job_progress import parse_progress_update
+
+        update = parse_progress_update(
+            "out_time_ms=5000000",
+            ffmpeg_duration_seconds=20.0,
+        )
+
+        assert update is not None
+        assert update.progress_percent == 25.0
+        assert update.status_message == "Transcoding 25.0%"
+
+    def test_parse_ffmpeg_progress_end_reports_completion(self):
+        from app.job_progress import parse_progress_update
+
+        update = parse_progress_update(
+            "progress=end",
+            ffmpeg_duration_seconds=20.0,
+        )
+
+        assert update is not None
+        assert update.progress_percent == 100.0
+        assert update.status_message == "Transcoding 100.0%"

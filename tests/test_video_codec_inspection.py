@@ -13,7 +13,10 @@ class TestVideoCodecInspection:
             import subprocess
 
             payload = {
-                "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
+                "format": {
+                    "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                    "duration": "123.45",
+                },
                 "streams": [
                     {"codec_type": "video", "codec_name": "h264"},
                     {"codec_type": "audio", "codec_name": "aac", "profile": "LC"},
@@ -28,6 +31,7 @@ class TestVideoCodecInspection:
         assert result.video_codec == "h264"
         assert result.audio_codecs == ["aac", "aac"]
         assert result.audio_profiles == ["lc", "lc"]
+        assert result.duration_seconds == 123.45
 
     def test_needs_codec_normalization_only_when_not_mp4_h264_aac(self):
         from app.video_codec_inspection import CodecInspectionResult, needs_codec_normalization

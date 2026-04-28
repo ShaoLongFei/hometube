@@ -32,6 +32,9 @@ def build_normalization_command(
         "-y",
         "-loglevel",
         "warning",
+        "-nostats",
+        "-progress",
+        "pipe:1",
         "-i",
         str(source_path),
         "-map",
@@ -63,6 +66,7 @@ def normalize_video_file(
     run_command_fn: Callable[..., int],
     runtime_state=None,
     subtitle_codec: str = "mov_text",
+    duration_seconds: float | None = None,
 ) -> CodecNormalizationResult:
     """Normalize one file to MP4/H.264/AAC-LC, or return fallback warning."""
     cmd = build_normalization_command(
@@ -70,7 +74,10 @@ def normalize_video_file(
         output_path,
         subtitle_codec=subtitle_codec,
     )
-    result = run_command_fn(cmd, runtime_state=runtime_state)
+    run_kwargs = {"runtime_state": runtime_state}
+    if duration_seconds is not None:
+        run_kwargs["command_duration_seconds"] = duration_seconds
+    result = run_command_fn(cmd, **run_kwargs)
     if result == 0 and output_path.exists():
         return CodecNormalizationResult(True, output_path, None)
     return CodecNormalizationResult(False, source_path, "Codec normalization failed")

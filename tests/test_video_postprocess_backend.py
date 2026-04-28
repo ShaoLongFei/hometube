@@ -253,6 +253,7 @@ class TestVideoPostprocessBackend:
         final_file.write_bytes(b"video")
         normalized_file = workspace / "final.mp4"
         inspected_paths: list[Path] = []
+        normalization_durations: list[float | None] = []
 
         request = SingleVideoDownloadRequest(
             video_url="https://example.com/watch?v=abc123",
@@ -277,6 +278,7 @@ class TestVideoPostprocessBackend:
                     video_codec="vp9",
                     audio_codecs=["opus"],
                     audio_profiles=[None],
+                    duration_seconds=60.0,
                 )
             return CodecInspectionResult(
                 container="mp4",
@@ -286,6 +288,7 @@ class TestVideoPostprocessBackend:
             )
 
         def fake_normalize(source_path: Path, output_path: Path, **kwargs):
+            normalization_durations.append(kwargs.get("duration_seconds"))
             normalized_file.write_bytes(b"normalized")
             return CodecNormalizationResult(True, normalized_file, None)
 
@@ -305,6 +308,61 @@ class TestVideoPostprocessBackend:
         assert result.normalization_succeeded is True
         assert result.codec_summary == "MP4 / H.264 / AAC-LC"
         assert result.warning_message is None
+        assert normalization_durations == [60.0]
+
+    def test_postprocess_video_file_passes_run_command_to_real_normalizer(
+        self, tmp_path: Path
+    ):
+        from app.download_runtime_state import MemoryRuntimeState
+        from app.video_codec_inspection import CodecInspectionResult
+        from app.video_download_backend import SingleVideoDownloadRequest
+        from app.video_postprocess_backend import postprocess_video_file
+
+        workspace = tmp_path / "video"
+        workspace.mkdir()
+        final_file = workspace / "final.webm"
+        final_file.write_bytes(b"video")
+        normalized_file = workspace / "final.mp4"
+        calls: list[list[str]] = []
+
+        request = SingleVideoDownloadRequest(
+            video_url="https://example.com/watch?v=abc123",
+            video_id="abc123",
+            video_title="Episode 03",
+            video_workspace=workspace,
+            base_output="Episode 03",
+            embed_chapters=False,
+            embed_subs=False,
+            force_mp4=False,
+            ytdlp_custom_args="",
+            do_cut=False,
+            subs_selected=[],
+            sb_choice="disabled",
+        )
+
+        def fake_run_command(cmd, runtime_state=None):
+            calls.append(cmd)
+            normalized_file.write_bytes(b"normalized")
+            return 0
+
+        result = postprocess_video_file(
+            request,
+            MemoryRuntimeState(),
+            final_file,
+            run_command_fn=fake_run_command,
+            check_required_subtitles_embedded_fn=lambda video_path, langs: True,
+            customize_metadata_fn=lambda *args, **kwargs: True,
+            probe_video_codecs_fn=lambda path: CodecInspectionResult(
+                container="webm" if path == final_file else "mp4",
+                video_codec="vp9" if path == final_file else "h264",
+                audio_codecs=["opus"] if path == final_file else ["aac"],
+                audio_profiles=[None] if path == final_file else ["lc"],
+            ),
+        )
+
+        assert result.final_path == normalized_file
+        assert calls
+        assert calls[0][0] == "ffmpeg"
 
     def test_postprocess_video_file_returns_original_with_warning_on_normalization_failure(
         self, tmp_path: Path

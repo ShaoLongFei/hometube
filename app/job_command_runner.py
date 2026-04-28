@@ -20,6 +20,7 @@ def run_monitored_command(
     runtime_state=None,
     log_fn=None,
     progress_callback=None,
+    command_duration_seconds: float | None = None,
 ) -> int:
     """Execute one command and surface progress/log lines through callbacks."""
     state = adapt_runtime_state(runtime_state)
@@ -37,6 +38,14 @@ def run_monitored_command(
             assert proc.stdout is not None
             for raw_line in proc.stdout:
                 line = raw_line.rstrip("\n")
+                update = parse_progress_update(
+                    line,
+                    ffmpeg_duration_seconds=command_duration_seconds,
+                )
+                if update is not None and command_duration_seconds is not None:
+                    emit_progress(update)
+                    continue
+
                 if not should_suppress_message(line, runtime_state=state):
                     emit_log(line)
 

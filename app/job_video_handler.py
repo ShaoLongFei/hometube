@@ -318,11 +318,12 @@ def execute_single_video_download_for_job(
         metadata_context=metadata_context,
         log_fn=callbacks.log,
         progress_fn=callbacks.stage,
-        run_command_fn=lambda cmd, runtime_state=None: run_monitored_command(
+        run_command_fn=lambda cmd, runtime_state=None, command_duration_seconds=None: run_monitored_command(
             cmd,
             runtime_state=runtime_state,
             log_fn=callbacks.log,
             progress_callback=callbacks.update,
+            command_duration_seconds=command_duration_seconds,
         ),
         cookies_resolver=_cookies_resolver,
         sponsor_segments_resolver=get_sponsorblock_segments,

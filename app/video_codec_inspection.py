@@ -21,6 +21,7 @@ class CodecInspectionResult:
     video_codec: str | None
     audio_codecs: list[str]
     audio_profiles: list[str | None]
+    duration_seconds: float | None = None
 
 
 def _normalize_container(format_name: str) -> str:
@@ -30,6 +31,15 @@ def _normalize_container(format_name: str) -> str:
     if "matroska" in format_lower or "webm" in format_lower:
         return "mkv" if "matroska" in format_lower else "webm"
     return format_lower.split(",")[0] if format_lower else "unknown"
+
+
+def _parse_duration_seconds(duration_value: object) -> float | None:
+    """Parse ffprobe duration text into seconds."""
+    try:
+        duration = float(duration_value)
+    except (TypeError, ValueError):
+        return None
+    return duration if duration > 0 else None
 
 
 def probe_video_codecs(
@@ -53,8 +63,10 @@ def probe_video_codecs(
         raise RuntimeError(result.stderr or "ffprobe failed")
 
     payload = json.loads(result.stdout or "{}")
-    format_name = payload.get("format", {}).get("format_name", "")
+    format_data = payload.get("format", {})
+    format_name = format_data.get("format_name", "")
     container = _normalize_container(format_name)
+    duration_seconds = _parse_duration_seconds(format_data.get("duration"))
     video_codec = None
     audio_codecs: list[str] = []
     audio_profiles: list[str | None] = []
@@ -76,6 +88,7 @@ def probe_video_codecs(
         video_codec=video_codec,
         audio_codecs=audio_codecs,
         audio_profiles=audio_profiles,
+        duration_seconds=duration_seconds,
     )
 
 
