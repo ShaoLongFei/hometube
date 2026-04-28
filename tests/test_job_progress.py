@@ -1,0 +1,25 @@
+class TestJobProgress:
+    def test_parse_download_progress_line_extracts_percent_and_metrics(self):
+        from app.job_progress import parse_progress_update
+
+        update = parse_progress_update(
+            "[download]  42.3% of 100.00MiB at 2.00MiB/s ETA 00:12"
+        )
+
+        assert update is not None
+        assert update.progress_percent == 42.3
+        assert update.downloaded_bytes == 42300000
+        assert update.total_bytes == 100000000
+        assert update.eta_seconds == 12
+        assert update.status_message == "Downloading"
+
+    def test_parse_fragment_progress_line_estimates_progress_without_sizes(self):
+        from app.job_progress import parse_progress_update
+
+        update = parse_progress_update("[download] Downloading fragment 3/10")
+
+        assert update is not None
+        assert update.progress_percent == 30.0
+        assert update.downloaded_bytes is None
+        assert update.total_bytes is None
+        assert update.status_message == "Downloading fragments"

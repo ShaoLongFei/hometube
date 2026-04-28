@@ -30,10 +30,13 @@ from app.core import (
     build_base_ytdlp_command,
     build_cookies_params as core_build_cookies_params,
 )
+from app.download_auth import (
+    resolve_cookies_params,
+    resolve_cookies_params_from_config,
+)
 from app.file_system_utils import (
     PathAccessError,
     classify_path_access_error,
-    is_valid_cookie_file,
     is_valid_browser,
     sanitize_filename,
     list_subdirs_recursive,
@@ -64,9 +67,6 @@ from app.display_utils import (
 )
 from app.extension_bundle import build_extension_zip_bytes
 from app.medias_utils import (
-    analyze_audio_formats,
-    get_profiles_with_formats_id_to_download,
-    get_available_formats,
     get_video_title,
     customize_video_metadata,
 )
@@ -138,7 +138,33 @@ from app.playlist_sync import (
     format_sync_plan_details,
     refresh_playlist_url_info,
 )
+from app.download_runtime_state import adapt_runtime_state
+from app.job_runtime import ensure_scheduler_thread_started
+from app.job_store import JobStore
+from app.job_submission import (
+    derive_site_name,
+    enqueue_playlist_job,
+    enqueue_video_job,
+    get_jobs_db_path,
+)
 from app.text_utils import render_title, DEFAULT_PLAYLIST_TITLE_PATTERN
+from app.video_download_backend import (
+    DownloadAttemptResult,
+    SingleVideoDownloadRequest,
+    execute_video_download,
+)
+from app.video_download_service import (
+    smart_download_with_profiles as service_smart_download_with_profiles,
+)
+from app.video_file_ops import (
+    find_final_video_file as locate_final_video_file,
+    organize_downloaded_video_file as finalize_downloaded_video_file,
+)
+from app.video_workspace_backend import (
+    compute_workspace_profiles,
+    load_url_info_json,
+    prepare_video_workspace,
+)
 
 # Configuration import (must be after translations for configure_language)
 from app.config import (
@@ -414,6 +440,11 @@ def smart_download_with_profiles(
     progress_placeholder=None,
     status_placeholder=None,
     info_placeholder=None,
+    *,
+    chosen_profiles: list[dict] | None = None,
+    quality_strategy_override: str | None = None,
+    refuse_quality_downgrade_best: bool | None = None,
+    runtime_state=None,
 ) -> tuple[int, str]:
     """
     Intelligent profile-based download with smart fallback strategy.
@@ -433,70 +464,47 @@ def smart_download_with_profiles(
     Returns:
         tuple[int, str]: (return_code, error_message)
     """
-    safe_push_log("")
-    log_title("🎯 Starting profile-based download...")
+    from app.url_utils import load_url_info_from_file
 
-    # Setup cookies (compact)
-    cookies_part = build_cookies_params(url)
-    cookies_available = len(cookies_part) > 0
-
-    # Reset session-based message suppression for new download
-    session_keys_to_reset = ["auth_hint_shown_this_download", "po_token_warning_shown"]
-    for key in session_keys_to_reset:
-        if key in st.session_state:
-            del st.session_state[key]
-
-    # Use NEW STRATEGY: get profiles from quality strategy session state
-    log_title("🎯 Using quality strategy profiles...")
-
-    # Get profiles from session state (set by quality strategy)
-    chosen_profiles = st.session_state.get("chosen_format_profiles", [])
-    quality_strategy = st.session_state.get("download_quality_strategy", "auto_best")
-
-    if not chosen_profiles:
-        error_msg = t("error_no_profiles_for_download")
-        safe_push_log(f"❌ {error_msg}")
-        return 1, error_msg
-
-    profiles_to_try = chosen_profiles
-    safe_push_log(
-        f"✅ Using {len(profiles_to_try)} profiles from {quality_strategy} strategy"
-    )
-
-    # Update download mode and refuse_quality_downgrade based on strategy
-    if quality_strategy == "auto_best":
-        download_mode = "auto"
-        refuse_quality_downgrade = False
-    elif quality_strategy == "best_no_fallback":
-        download_mode = "forced"
-        refuse_quality_downgrade = st.session_state.get(
-            "refuse_quality_downgrade_best", not settings.QUALITY_DOWNGRADE
-        )
-    elif quality_strategy in ["choose_profile", "choose_available"]:
-        download_mode = "forced"
-        refuse_quality_downgrade = False  # User made specific choice
-
-    safe_push_log("")
-
-    # Execute download attempts
-    return _execute_profile_downloads(
-        profiles_to_try,
-        base_output,
-        tmp_video_dir,
-        embed_chapters,
-        embed_subs,
-        ytdlp_custom_args,
-        url,
-        cookies_part,
-        cookies_available,
-        refuse_quality_downgrade,
-        do_cut,
-        subs_selected,
-        sb_choice,
-        progress_placeholder,
-        status_placeholder,
-        info_placeholder,
-        download_mode,
+    state = adapt_runtime_state(runtime_state or st.session_state)
+    return service_smart_download_with_profiles(
+        base_output=base_output,
+        tmp_video_dir=tmp_video_dir,
+        embed_chapters=embed_chapters,
+        embed_subs=embed_subs,
+        force_mp4=force_mp4,
+        ytdlp_custom_args=ytdlp_custom_args,
+        url=url,
+        do_cut=do_cut,
+        subs_selected=subs_selected,
+        sb_choice=sb_choice,
+        runtime_state=state,
+        cookies_resolver=lambda resolved_url, current_state: build_cookies_params(
+            resolved_url,
+            runtime_state=current_state,
+        ),
+        translations={
+            "error_no_profiles_for_download": t("error_no_profiles_for_download")
+        },
+        settings_quality_downgrade=settings.QUALITY_DOWNGRADE,
+        youtube_clients=YOUTUBE_CLIENT_FALLBACKS,
+        progress_placeholder=progress_placeholder,
+        status_placeholder=status_placeholder,
+        info_placeholder=info_placeholder,
+        chosen_profiles=chosen_profiles,
+        quality_strategy_override=quality_strategy_override,
+        refuse_quality_downgrade_best=refuse_quality_downgrade_best,
+        build_profile_command_fn=_build_profile_command,
+        try_profile_with_clients_fn=lambda *args, **kwargs: _try_profile_with_clients(
+            *args[:8],
+            runtime_state=kwargs["runtime_state"],
+        ),
+        add_selected_format_fn=add_selected_format,
+        mark_format_error_fn=mark_format_error,
+        run_cmd_fn=run_cmd,
+        log_fn=safe_push_log,
+        title_log_fn=log_title,
+        load_url_info_from_file_fn=load_url_info_from_file,
     )
 
 
@@ -506,13 +514,14 @@ def _handle_profile_failure(
     profiles_to_try: list[dict],
     download_mode: str,
     refuse_quality_downgrade: bool,
+    runtime_state,
 ) -> bool:
     """Handle profile failure and determine if we should continue trying."""
     safe_push_log("")
     safe_push_log(f"❌ FAILED: {profile['label']}")
 
     # Diagnose the main issue
-    last_error = st.session_state.get("last_error", "").lower()
+    last_error = runtime_state.get("last_error", "").lower()
     if "requested format is not available" in last_error:
         safe_push_log("⚠️ Format rejected (authentication limitation)")
     elif any(auth_pattern in last_error for auth_pattern in AUTH_ERROR_PATTERNS):
@@ -548,6 +557,7 @@ def _try_profile_with_clients(
     progress_placeholder,
     info_placeholder,
     preferred_client: str = None,
+    runtime_state=None,
 ) -> bool:
     """
     Try downloading with all YouTube client fallbacks for a profile.
@@ -608,7 +618,11 @@ def _try_profile_with_clients(
 
             cmd = cmd_base + client_args + cookies_part + [url]
             ret = run_cmd(
-                cmd, progress_placeholder, status_placeholder, info_placeholder
+                cmd,
+                progress_placeholder,
+                status_placeholder,
+                info_placeholder,
+                runtime_state=runtime_state,
             )
 
             if ret == 0:
@@ -622,7 +636,13 @@ def _try_profile_with_clients(
             )
 
         cmd = cmd_base + client_args + [url]
-        ret = run_cmd(cmd, progress_placeholder, status_placeholder, info_placeholder)
+        ret = run_cmd(
+            cmd,
+            progress_placeholder,
+            status_placeholder,
+            info_placeholder,
+            runtime_state=runtime_state,
+        )
 
         if ret == 0:
             safe_push_log(f"✅ SUCCESS: {client_name.title()} client")
@@ -745,6 +765,7 @@ def _execute_profile_downloads(
     status_placeholder,
     info_placeholder,
     download_mode: str,
+    runtime_state,
 ) -> tuple[int, str]:
     """Execute download attempts for each profile."""
     log_title("🚀 Starting download attempts...")
@@ -794,7 +815,7 @@ def _execute_profile_downloads(
         )
 
         # Store current profile for error diagnostics
-        st.session_state["current_attempting_profile"] = profile["label"]
+        runtime_state["current_attempting_profile"] = profile["label"]
 
         # Update status.json - mark format as "downloading"
         format_id = profile.get("format_id", "unknown")
@@ -816,6 +837,7 @@ def _execute_profile_downloads(
             progress_placeholder,
             info_placeholder,
             preferred_client,
+            runtime_state,
         )
 
         if success:
@@ -837,9 +859,7 @@ def _execute_profile_downloads(
             )
 
             # Store format_id in session state for file renaming
-            st.session_state["downloaded_format_id"] = profile.get(
-                "format_id", "unknown"
-            )
+            runtime_state["downloaded_format_id"] = profile.get("format_id", "unknown")
 
             return 0, ""
 
@@ -858,6 +878,7 @@ def _execute_profile_downloads(
             profiles_to_try,
             download_mode,
             refuse_quality_downgrade,
+            runtime_state,
         )
 
         if not should_continue:
@@ -990,6 +1011,111 @@ from app.notifications import render_notifications_streamlit  # noqa: E402
 render_notifications_streamlit()
 
 
+background_job_store = JobStore(get_jobs_db_path(TMP_DOWNLOAD_FOLDER))
+ensure_scheduler_thread_started(background_job_store)
+
+
+def build_background_job_config_snapshot(
+    *,
+    base_output: str,
+    embed_chapters: bool,
+    embed_subs: bool,
+    ytdlp_custom_args: str,
+    do_cut: bool,
+    start_sec: int | None,
+    end_sec: int | None,
+    cutting_mode: str,
+    subs_selected: list[str],
+    sb_choice: str,
+    requested_format_id: str | None,
+) -> dict:
+    """Freeze the current UI download options into one persistent job config."""
+    return {
+        "base_output": base_output,
+        "embed_chapters": embed_chapters,
+        "embed_subs": embed_subs,
+        "force_mp4": False,
+        "ytdlp_custom_args": ytdlp_custom_args,
+        "do_cut": do_cut,
+        "start_sec": start_sec,
+        "end_sec": end_sec,
+        "cutting_mode": cutting_mode,
+        "subs_selected": list(subs_selected or []),
+        "sb_choice": sb_choice,
+        "requested_format_id": requested_format_id,
+        "cookies_method": st.session_state.get("cookies_method", "none"),
+        "browser_select": st.session_state.get("browser_select", settings.BROWSER_SELECT),
+        "browser_profile": st.session_state.get("browser_profile", ""),
+        "chosen_profiles": list(st.session_state.get("chosen_format_profiles", [])),
+        "download_quality_strategy": st.session_state.get(
+            "quality_strategy",
+            "auto_best",
+        ),
+        "refuse_quality_downgrade_best": bool(
+            st.session_state.get(
+                "refuse_quality_downgrade_best",
+                not settings.QUALITY_DOWNGRADE,
+            )
+        ),
+    }
+
+
+def render_background_jobs_panel() -> None:
+    """Render a read-only view of persisted background jobs."""
+    jobs = list(reversed(background_job_store.list_jobs()))
+
+    with st.expander(t("background_jobs_title"), expanded=False):
+        if not jobs:
+            st.caption(t("background_jobs_empty"))
+            return
+
+        for job in jobs[:8]:
+            title = job.get("title") or job.get("url") or job["id"]
+            total_items = job.get("total_items", 0)
+            completed_items = job.get("completed_items", 0)
+            items = background_job_store.get_job_items(job["id"])
+            running_items = [item for item in items if item["status"] == "running"]
+            in_flight_progress = sum(
+                min(max(float(item.get("progress_percent") or 0.0), 0.0), 100.0) / 100.0
+                for item in running_items
+            )
+            progress_total = max(total_items, 1)
+            progress_value = min((completed_items + in_flight_progress) / progress_total, 1.0)
+
+            st.markdown(f"**{title}**")
+            st.caption(
+                f"{t('background_jobs_status')}: {job['status']} | "
+                f"{t('background_jobs_destination')}: {job['destination_dir']}"
+            )
+
+            if total_items > 0:
+                st.progress(
+                    progress_value,
+                    text=t(
+                        "background_jobs_progress",
+                        completed=completed_items,
+                        total=total_items,
+                    ),
+                )
+
+            for item in running_items[:2]:
+                item_title = item.get("title") or item.get("video_url") or item["id"]
+                status_message = item.get("status_message") or t("status_downloading")
+                item_progress = min(
+                    max(float(item.get("progress_percent") or 0.0), 0.0) / 100.0,
+                    1.0,
+                )
+                st.caption(f"{item_title} · {status_message}")
+                st.progress(item_progress)
+
+            recent_logs = list(reversed(background_job_store.list_job_logs(job["id"], limit=3)))
+            for log in recent_logs:
+                st.caption(log["message"])
+
+
+render_background_jobs_panel()
+
+
 # === SESSION ===
 if "run_seq" not in st.session_state:
     st.session_state.run_seq = 0  # incremented at each execution
@@ -1001,6 +1127,10 @@ if "download_finished" not in st.session_state:
     )
 if "download_cancelled" not in st.session_state:
     st.session_state.download_cancelled = False
+
+background_job_notice = st.session_state.pop("background_job_notice", "")
+if background_job_notice:
+    st.success(background_job_notice)
 
 
 def init_url_workspace(
@@ -1072,72 +1202,20 @@ def compute_optimal_profiles(url_info: dict, json_path: Path) -> None:
         url_info: Video information from yt-dlp
         json_path: Path to url_info.json file
     """
-    # Only compute profiles for videos, not playlists
-    is_playlist = url_info.get("_type") == "playlist"
-    if is_playlist:
-        safe_push_log(
-            "ℹ️ Playlist detected - skipping profile computation (done per video)"
-        )
-        st.session_state.optimal_format_profiles = []
-        st.session_state.available_formats_list = []
-        return
-
-    try:
-        safe_push_log("🎯 Computing optimal format profiles...")
-
-        # Get language preferences from settings
-        language_primary = settings.LANGUAGE_PRIMARY or "en"
-        languages_secondaries = (
+    result = compute_workspace_profiles(
+        url_info,
+        json_path,
+        language_primary=settings.LANGUAGE_PRIMARY or "en",
+        languages_secondaries=(
             ",".join(settings.LANGUAGES_SECONDARIES)
             if settings.LANGUAGES_SECONDARIES
             else ""
-        )
-        vo_first = settings.VO_FIRST
-
-        # Analyze audio formats
-        safe_push_log("🎵 Analyzing audio tracks...")
-        vo_lang, audio_formats, multiple_langs = analyze_audio_formats(
-            url_info,
-            language_primary=language_primary,
-            languages_secondaries=languages_secondaries,
-            vo_first=vo_first,
-        )
-
-        safe_push_log(f"   VO language: {vo_lang or 'unknown'}")
-        safe_push_log(f"   Audio tracks: {len(audio_formats)}")
-        safe_push_log(f"   Multi-language: {'Yes' if multiple_langs else 'No'}")
-
-        # Get optimal profiles - returns complete profiles with all fields
-        safe_push_log("🎯 Selecting optimal video formats (AV1/VP9 priority)...")
-        optimal_profiles = get_profiles_with_formats_id_to_download(
-            str(json_path), multiple_langs, audio_formats
-        )
-
-        if not optimal_profiles:
-            safe_push_log("❌ No optimal profiles found")
-            st.session_state.optimal_format_profiles = []
-        else:
-            safe_push_log(f"✅ Found {len(optimal_profiles)} optimal profile(s)")
-
-            # Log profile details
-            for idx, profile in enumerate(optimal_profiles, 1):
-                safe_push_log(f"📦 Profile {idx}: {profile.get('label', 'Unknown')}")
-                safe_push_log(f"   🆔 Format ID: {profile.get('format_id', '')}")
-                safe_push_log(f"   🎬 Video Codec: {profile.get('vcodec', 'unknown')}")
-                safe_push_log(f"   📐 Resolution: {profile.get('height', 0)}p")
-
-            st.session_state.optimal_format_profiles = optimal_profiles
-
-        # Also store available formats for "choose_available" strategy
-        available_formats = get_available_formats(url_info)
-        st.session_state.available_formats_list = available_formats
-
-        safe_push_log("✅ Profile computation complete")
-
-    except Exception as e:
-        safe_push_log(f"⚠️ Error computing profiles: {str(e)}")
-        st.session_state.optimal_format_profiles = []
-        st.session_state.available_formats_list = []
+        ),
+        vo_first=settings.VO_FIRST,
+        log_fn=safe_push_log,
+    )
+    st.session_state.optimal_format_profiles = result.optimal_format_profiles
+    st.session_state.available_formats_list = result.available_formats_list
 
 
 # === REUSABLE VIDEO DOWNLOAD FUNCTIONS ===
@@ -1169,59 +1247,52 @@ def initialize_video_workspace(
     Returns:
         tuple[dict | None, bool]: (url_info dict or None, success bool)
     """
-    video_url_info_path = video_workspace / "url_info.json"
-    video_status_path = video_workspace / "status.json"
-
-    # Check if url_info.json already exists
-    video_url_info = None
-    if video_url_info_path.exists():
-        try:
-            import json
-
-            with open(video_url_info_path, "r", encoding="utf-8") as f:
-                video_url_info = json.load(f)
-            safe_push_log(f"📋 Using existing url_info.json for {video_title}")
-        except Exception as e:
-            safe_push_log(f"⚠️ Could not load existing url_info.json: {e}")
-
-    # If url_info.json doesn't exist, fetch it
-    if not video_url_info:
-        safe_push_log(f"📋 Fetching url_info.json for {video_title}...")
-        cookies_params = build_cookies_params_from_config(video_url)
-
-        video_url_info = build_url_info(
-            clean_url=video_url,
-            json_output_path=video_url_info_path,
+    def _fetch_url_info(url: str, json_output_path: Path) -> dict | None:
+        cookies_params = build_cookies_params_from_config(url)
+        return build_url_info(
+            clean_url=url,
+            json_output_path=json_output_path,
             cookies_params=cookies_params,
             youtube_cookies_file_path=YOUTUBE_COOKIES_FILE_PATH,
             cookies_from_browser=COOKIES_FROM_BROWSER,
             youtube_clients=YOUTUBE_CLIENT_FALLBACKS,
         )
 
-    if video_url_info and "error" not in video_url_info:
-        # Create status.json if it doesn't exist
-        if not video_status_path.exists():
-            create_initial_status(
-                url=video_url,
-                video_id=video_id,
-                title=video_title,
-                content_type="video",
-                tmp_url_workspace=video_workspace,
-            )
-            safe_push_log(f"📊 Created status.json for {video_title}")
+    result = prepare_video_workspace(
+        video_url=video_url,
+        video_id=video_id,
+        video_title=video_title,
+        video_workspace=video_workspace,
+        load_existing_url_info=load_url_info_json,
+        fetch_url_info=_fetch_url_info,
+        create_initial_status_fn=create_initial_status,
+        compute_profiles_fn=lambda url_info, json_path: compute_workspace_profiles(
+            url_info,
+            json_path,
+            language_primary=settings.LANGUAGE_PRIMARY or "en",
+            languages_secondaries=(
+                ",".join(settings.LANGUAGES_SECONDARIES)
+                if settings.LANGUAGES_SECONDARIES
+                else ""
+            ),
+            vo_first=settings.VO_FIRST,
+            log_fn=safe_push_log,
+        ),
+        log_fn=safe_push_log,
+    )
 
-        # Compute optimal profiles for this video
-        compute_optimal_profiles(video_url_info, video_url_info_path)
+    st.session_state.optimal_format_profiles = result.profiles.optimal_format_profiles
+    st.session_state.available_formats_list = result.profiles.available_formats_list
+    if result.profiles.chosen_format_profiles:
+        st.session_state["chosen_format_profiles"] = (
+            result.profiles.chosen_format_profiles
+        )
+    if result.profiles.download_quality_strategy:
+        st.session_state["download_quality_strategy"] = (
+            result.profiles.download_quality_strategy
+        )
 
-        # Copy to chosen_format_profiles for smart_download_with_profiles()
-        optimal_profiles = st.session_state.get("optimal_format_profiles", [])
-        if optimal_profiles:
-            st.session_state["chosen_format_profiles"] = optimal_profiles
-            st.session_state["download_quality_strategy"] = "auto_best"
-
-        return video_url_info, True
-    else:
-        return None, False
+    return result.url_info, result.success
 
 
 def check_existing_video_file(
@@ -1344,122 +1415,89 @@ def download_single_video(
         tuple[int, Path | None, str | None]: (return_code, final_file_path, error_message)
         return_code: 0 = success, -1 = cancelled, >0 = error
     """
-    # Initialize workspace
-    video_url_info, success = initialize_video_workspace(
-        video_url, video_id, video_title, video_workspace
+    request = SingleVideoDownloadRequest(
+        video_url=video_url,
+        video_id=video_id,
+        video_title=video_title,
+        video_workspace=video_workspace,
+        base_output=base_output,
+        embed_chapters=embed_chapters,
+        embed_subs=embed_subs,
+        force_mp4=force_mp4,
+        ytdlp_custom_args=ytdlp_custom_args,
+        do_cut=do_cut,
+        subs_selected=subs_selected,
+        sb_choice=sb_choice,
+        requested_format_id=requested_format_id,
     )
 
-    if not success:
-        error_msg = (
-            video_url_info.get("error", "Unknown error")
-            if video_url_info
-            else "Failed to fetch video info"
+    def _initialize_workspace(req: SingleVideoDownloadRequest):
+        return initialize_video_workspace(
+            req.video_url,
+            req.video_id,
+            req.video_title,
+            req.video_workspace,
         )
-        return 1, None, error_msg
 
-    # Check for existing file
-    existing_file, completed_format_id = check_existing_video_file(
-        video_workspace, requested_format_id
-    )
-
-    if existing_file:
-        safe_push_log("⚡ Skipping download - using cached file")
-
-        # Update status to completed if not already
-        if completed_format_id:
-            update_format_status(
-                tmp_url_workspace=video_workspace,
-                video_format=completed_format_id,
-                final_file=existing_file,
-            )
-
-        return 0, existing_file, None
-    else:
-        safe_push_log(f"📥 Downloading {video_title} with full workflow...")
+    def _perform_download(req: SingleVideoDownloadRequest) -> DownloadAttemptResult:
+        safe_push_log(f"📥 Downloading {req.video_title} with full workflow...")
         ret_dl, error_msg = smart_download_with_profiles(
-            base_output=base_output,
-            tmp_video_dir=video_workspace,
-            embed_chapters=embed_chapters,
-            embed_subs=embed_subs,
-            force_mp4=force_mp4,
-            ytdlp_custom_args=ytdlp_custom_args,
-            url=video_url,
+            base_output=req.base_output,
+            tmp_video_dir=req.video_workspace,
+            embed_chapters=req.embed_chapters,
+            embed_subs=req.embed_subs,
+            force_mp4=req.force_mp4,
+            ytdlp_custom_args=req.ytdlp_custom_args,
+            url=req.video_url,
             download_mode="auto",
             target_profile=None,
             refuse_quality_downgrade=False,
-            do_cut=do_cut,
-            subs_selected=subs_selected,
-            sb_choice=sb_choice,
+            do_cut=req.do_cut,
+            subs_selected=req.subs_selected,
+            sb_choice=req.sb_choice,
             progress_placeholder=progress_placeholder,
             status_placeholder=status_placeholder,
             info_placeholder=info_placeholder,
         )
+        return DownloadAttemptResult(
+            return_code=ret_dl,
+            downloaded_format_id=st.session_state.get("downloaded_format_id"),
+            error_message=error_msg,
+        )
 
-        if ret_dl == 0:
-            # Find the final file
-            final_file = find_final_video_file(video_workspace, base_output)
+    result = execute_video_download(
+        request,
+        initialize_workspace=_initialize_workspace,
+        check_existing_file=check_existing_video_file,
+        perform_download=_perform_download,
+        locate_final_file=find_final_video_file,
+        finalize_downloaded_file=lambda video_workspace, downloaded_file, base_output, downloaded_format_id, subs_selected: finalize_downloaded_video_file(
+            video_workspace,
+            downloaded_file,
+            base_output=base_output,
+            downloaded_format_id=downloaded_format_id,
+            subs_selected=subs_selected,
+            log_fn=safe_push_log,
+        ),
+        update_cached_format_status=update_format_status,
+    )
 
-            # Organize files: rename to generic name and create final.{ext} (same as single videos)
-            if final_file and final_file.exists():
-                final_file = organize_downloaded_video_file(
-                    video_workspace=video_workspace,
-                    downloaded_file=final_file,
-                    base_output=base_output,
-                    subs_selected=subs_selected,
-                )
+    if result.used_cached_file:
+        safe_push_log("⚡ Skipping download - using cached file")
 
-            return ret_dl, final_file, None
-        else:
-            return ret_dl, None, error_msg
+    return result.return_code, result.final_file, result.error_message
 
 
 def find_final_video_file(
     video_workspace: Path,
     base_output: str,
 ) -> Path | None:
-    """
-    Find the final video file after download.
-
-    This function searches for the downloaded file in multiple ways:
-    1. By base output name (what yt-dlp created)
-    2. By generic name (final.{ext})
-    3. Any video file in the workspace (fallback)
-
-    Args:
-        video_workspace: Path to video workspace directory
-        base_output: Base output filename (without extension)
-
-    Returns:
-        Path | None: Path to final file or None if not found
-    """
-    final_tmp = None
-
-    # First, try to find the file by the base output name (what yt-dlp created)
-    base_output_sanitized = sanitize_filename(base_output)
-    for ext in [".mkv", ".mp4", ".webm"]:
-        potential_file = video_workspace / f"{base_output_sanitized}{ext}"
-        if potential_file.exists():
-            final_tmp = potential_file
-            safe_push_log(f"✅ Found downloaded file: {potential_file.name}")
-            break
-
-    # Check for final.{ext} (generic name)
-    if not final_tmp:
-        for ext in [".mkv", ".mp4", ".webm"]:
-            final_path = tmp_files.get_final_path(video_workspace, ext.lstrip("."))
-            if final_path.exists():
-                final_tmp = final_path
-                safe_push_log(f"✅ Found final file: {final_path.name}")
-                break
-
-    # Fallback: find any video file in the workspace
-    if not final_tmp:
-        existing_video_tracks = tmp_files.find_video_tracks(video_workspace)
-        if existing_video_tracks:
-            final_tmp = existing_video_tracks[0]
-            safe_push_log(f"✅ Found video file: {final_tmp.name}")
-
-    return final_tmp
+    """Compatibility wrapper for video file discovery."""
+    return locate_final_video_file(
+        video_workspace,
+        base_output,
+        log_fn=safe_push_log,
+    )
 
 
 def organize_downloaded_video_file(
@@ -1468,119 +1506,15 @@ def organize_downloaded_video_file(
     base_output: str,
     subs_selected: list[str] = None,
 ) -> Path:
-    """
-    Organize downloaded video file: rename to generic name and create final.{ext}.
-
-    This function implements the same logic as single videos:
-    1. Renames downloaded file to video-{FORMAT_ID}.{ext}
-    2. Renames subtitle files to generic names
-    3. Copies video to final.{ext} for consistency
-
-    Args:
-        video_workspace: Path to video workspace directory
-        downloaded_file: Path to the downloaded video file
-        base_output: Base output filename (without extension)
-        subs_selected: List of subtitle languages (optional)
-
-    Returns:
-        Path: Path to final.{ext} file
-    """
-    import shutil
-
-    # Get format_id from session (stored during download)
-    format_id = st.session_state.get("downloaded_format_id", "unknown")
-    safe_push_log(f"  🔍 Format ID from session: {format_id}")
-
-    # Rename to generic filename with format ID: video-{FORMAT_ID}.{ext}
-    generic_name = tmp_files.get_video_track_path(
-        video_workspace, format_id, downloaded_file.suffix.lstrip(".")
+    """Compatibility wrapper for video file finalization."""
+    return finalize_downloaded_video_file(
+        video_workspace,
+        downloaded_file,
+        base_output=base_output,
+        downloaded_format_id=st.session_state.get("downloaded_format_id", "unknown"),
+        subs_selected=subs_selected,
+        log_fn=safe_push_log,
     )
-    safe_push_log(f"  🔍 Target generic name: {generic_name.name}")
-
-    # Rename video file if needed
-    if downloaded_file != generic_name:
-        try:
-            if generic_name.exists():
-                if should_remove_tmp_files():
-                    generic_name.unlink()
-                    safe_push_log(f"  🗑️ Removed existing: {generic_name.name}")
-                else:
-                    safe_push_log(
-                        f"  ⚠️ Generic file already exists: {generic_name.name}"
-                    )
-
-            safe_push_log(
-                f"  🔄 Renaming: {downloaded_file.name} → {generic_name.name}"
-            )
-            downloaded_file.rename(generic_name)
-            safe_push_log(
-                f"  ✅ Video renamed: {downloaded_file.name} → {generic_name.name}"
-            )
-
-            # Verify the file exists after rename
-            if generic_name.exists():
-                size_mb = generic_name.stat().st_size / (1024 * 1024)
-                safe_push_log(
-                    f"  ✅ Verified: {generic_name.name} exists ({size_mb:.1f} MiB)"
-                )
-            else:
-                safe_push_log(
-                    f"  ❌ ERROR: {generic_name.name} doesn't exist after rename!"
-                )
-                return downloaded_file  # Return original if rename failed
-
-            final_tmp = generic_name
-        except Exception as e:
-            safe_push_log(f"  ⚠️ Could not rename video: {str(e)}")
-            final_tmp = downloaded_file
-    else:
-        final_tmp = downloaded_file
-
-    # Rename subtitle files to generic names
-    if subs_selected:
-        for lang in subs_selected:
-            # Look for subtitle files with the original name
-            for ext in [".srt", ".vtt"]:
-                original_sub = video_workspace / f"{base_output}.{lang}{ext}"
-                if original_sub.exists():
-                    generic_sub = tmp_files.get_subtitle_path(
-                        video_workspace, lang, is_cut=False
-                    )
-                    try:
-                        if generic_sub.exists():
-                            generic_sub.unlink()
-                        original_sub.rename(generic_sub)
-                        safe_push_log(
-                            f"  ✅ Subtitle renamed: {original_sub.name} → {generic_sub.name}"
-                        )
-                    except Exception as e:
-                        safe_push_log(f"  ⚠️ Could not rename subtitle: {str(e)}")
-
-    # Copy to final.{ext} for consistency (keep original for cache reuse)
-    final_path = tmp_files.get_final_path(video_workspace, final_tmp.suffix.lstrip("."))
-
-    if final_tmp != final_path:
-        try:
-            # Remove existing final file if it exists
-            if final_path.exists():
-                if should_remove_tmp_files():
-                    final_path.unlink()
-                    safe_push_log("🗑️ Removed existing final file")
-                else:
-                    safe_push_log("🔍 Debug mode: Overwriting existing final file")
-
-            # Copy (not rename!) to final name, keeping original for cache
-            shutil.copy2(str(final_tmp), str(final_path))
-            safe_push_log(f"📦 Copied: {final_tmp.name} → {final_path.name}")
-            safe_push_log(f"💾 Kept original {final_tmp.name} for cache reuse")
-            return final_path
-        except Exception as e:
-            safe_push_log(f"⚠️ Could not copy to final, using original: {str(e)}")
-            return final_tmp
-    else:
-        # Already has final name
-        safe_push_log(f"✓ File already has final name: {final_tmp.name}")
-        return final_tmp
 
 
 def url_analysis(url: str) -> dict | None:
@@ -1882,48 +1816,21 @@ def get_tmp_video_dir() -> Path | None:
     return st.session_state.get("tmp_url_workspace")
 
 
-def build_cookies_params(url: str | None = None) -> list[str]:
+def build_cookies_params(url: str | None = None, runtime_state=None) -> list[str]:
     """
     Builds cookie parameters based on user selection.
 
     Returns:
         list: yt-dlp parameters for cookies
     """
-    managed_result = build_site_cookies_params(url or "")
-    if "--cookies" in managed_result:
-        safe_push_log(f"🍪 Using managed site cookies for URL: {url}")
-        return managed_result
-
-    cookies_method = st.session_state.get("cookies_method", "none")
-
-    if cookies_method == "file":
-        result = core_build_cookies_params(
-            cookies_method="file", cookies_file_path=YOUTUBE_COOKIES_FILE_PATH
-        )
-        if "--cookies" in result:
-            safe_push_log(f"🍪 Using cookies from file: {YOUTUBE_COOKIES_FILE_PATH}")
-        else:
-            safe_push_log(
-                f"⚠️ Cookies file not found, falling back to no cookies: "
-                f"{YOUTUBE_COOKIES_FILE_PATH}"
-            )
-        return result
-
-    elif cookies_method == "browser":
-        browser = st.session_state.get("browser_select", "chrome")
-        profile = st.session_state.get("browser_profile", "").strip()
-
-        result = core_build_cookies_params(
-            cookies_method="browser", browser_select=browser, browser_profile=profile
-        )
-        browser_config = f"{browser}:{profile}" if profile else browser
-        safe_push_log(f"🍪 Using cookies from browser: {browser_config}")
-        return result
-
-    else:  # none
-        result = core_build_cookies_params(cookies_method="none")
-        safe_push_log("🍪 No cookies authentication")
-        return result
+    return resolve_cookies_params(
+        url=url or "",
+        runtime_state=runtime_state or st.session_state,
+        cookies_file_path=YOUTUBE_COOKIES_FILE_PATH,
+        managed_cookies_params_fn=build_site_cookies_params,
+        core_build_cookies_params_fn=core_build_cookies_params,
+        log_fn=safe_push_log,
+    )
 
 
 def build_cookies_params_from_config(url: str | None = None) -> list[str]:
@@ -1934,26 +1841,14 @@ def build_cookies_params_from_config(url: str | None = None) -> list[str]:
     Returns:
         list: yt-dlp parameters for cookies
     """
-    managed_result = build_site_cookies_params(url or "")
-    if "--cookies" in managed_result:
-        return managed_result
-
-    # Try cookies file first (most common for Docker/server setup)
-    if YOUTUBE_COOKIES_FILE_PATH and Path(YOUTUBE_COOKIES_FILE_PATH).exists():
-        return core_build_cookies_params(
-            cookies_method="file", cookies_file_path=YOUTUBE_COOKIES_FILE_PATH
-        )
-
-    # Try browser cookies if configured
-    if COOKIES_FROM_BROWSER and is_valid_browser(COOKIES_FROM_BROWSER):
-        return core_build_cookies_params(
-            cookies_method="browser",
-            browser_select=COOKIES_FROM_BROWSER,
-            browser_profile="",
-        )
-
-    # No cookies available
-    return []
+    return resolve_cookies_params_from_config(
+        url=url or "",
+        cookies_file_path=YOUTUBE_COOKIES_FILE_PATH,
+        cookies_from_browser=COOKIES_FROM_BROWSER,
+        managed_cookies_params_fn=build_site_cookies_params,
+        core_build_cookies_params_fn=core_build_cookies_params,
+        is_valid_browser_fn=is_valid_browser,
+    )
 
 
 class DownloadMetrics:
@@ -2807,7 +2702,10 @@ with st.expander(f"{t('ads_sponsors_title')}", expanded=False):
         with st.spinner(t("sponsors_detecting_spinner")):
             try:
                 # Get cookies for yt-dlp - use centralized function
-                cookies_part = build_cookies_params(url)
+                cookies_part = build_cookies_params(
+                    url,
+                    runtime_state=st.session_state,
+                )
 
                 # Detect all sponsor segments
                 clean_url = sanitize_url(url)
@@ -2910,101 +2808,91 @@ with st.expander(f"{t('ads_sponsors_title')}", expanded=False):
             st.session_state.sponsors_to_mark = mark_options
 
 # Optional cutting section with dynamic behavior
-if is_playlist_mode:
-    # Cutting controls are irrelevant for playlists
-    start_text = ""
-    end_text = ""
-else:
-    with st.expander(f"{t('cutting_title')}", expanded=False):
-        # st.markdown(f"### {t('optional_cutting')}")
+with st.expander(f"{t('cutting_title')}", expanded=False):
+    st.info(t("cutting_modes_presentation"))
 
-        st.info(t("cutting_modes_presentation"))
+    default_cutting_mode = settings.CUTTING_MODE
+    cutting_mode_options = ["keyframes", "precise"]
+    default_index = (
+        cutting_mode_options.index(default_cutting_mode)
+        if default_cutting_mode in cutting_mode_options
+        else 0
+    )
 
-        # Cutting mode selection
-        # st.markdown(f"**{t('cutting_mode_title')}**")
-        default_cutting_mode = settings.CUTTING_MODE
-        cutting_mode_options = ["keyframes", "precise"]
-        default_index = (
-            cutting_mode_options.index(default_cutting_mode)
-            if default_cutting_mode in cutting_mode_options
-            else 0
-        )
+    cutting_mode = st.radio(
+        t("cutting_mode_prompt"),
+        options=cutting_mode_options,
+        format_func=lambda x: {
+            "keyframes": t("cutting_mode_keyframes"),
+            "precise": t("cutting_mode_precise"),
+        }[x],
+        index=default_index,
+        help=t("cutting_mode_help"),
+        key="cutting_mode",
+    )
 
-        cutting_mode = st.radio(
-            t("cutting_mode_prompt"),
-            options=cutting_mode_options,
+    if cutting_mode == "keyframes":
+        st.info(t("cutting_mode_keyframes_info"))
+    else:
+        st.warning(t("cutting_mode_precise_info"))
+
+        st.markdown(f"**{t('advanced_encoding_options')}**")
+
+        codec_choice = st.radio(
+            t("codec_video"),
+            options=["h264", "h265"],
             format_func=lambda x: {
-                "keyframes": t("cutting_mode_keyframes"),
-                "precise": t("cutting_mode_precise"),
+                "h264": t("codec_h264"),
+                "h265": t("codec_h265"),
             }[x],
-            index=default_index,
-            help=t("cutting_mode_help"),
-            key="cutting_mode",
+            index=0,
+            help=t("codec_help"),
+            key="codec_choice",
         )
 
-        if cutting_mode == "keyframes":
-            st.info(t("cutting_mode_keyframes_info"))
+        quality_preset = st.radio(
+            t("encoding_quality"),
+            options=["balanced", "high_quality"],
+            format_func=lambda x: {
+                "balanced": t("quality_balanced"),
+                "high_quality": t("quality_high"),
+            }[x],
+            index=0,
+            help=t("quality_help"),
+            key="quality_preset",
+        )
+
+        if codec_choice == "h264":
+            crf_value = "16" if quality_preset == "balanced" else "14"
+            preset_value = "slow" if quality_preset == "balanced" else "slower"
+            st.info(t("h264_settings", preset=preset_value, crf=crf_value))
         else:
-            st.warning(t("cutting_mode_precise_info"))
+            crf_value = "16" if quality_preset == "balanced" else "14"
+            preset_value = "slow" if quality_preset == "balanced" else "slower"
+            st.info(t("h265_settings", preset=preset_value, crf=crf_value))
 
-            # Re-encoding options for precise mode (DYNAMIC!)
-            st.markdown(f"**{t('advanced_encoding_options')}**")
+    if is_playlist_mode:
+        st.caption(t("playlist_cutting_shared_hint"))
 
-            # Codec selection
-            codec_choice = st.radio(
-                t("codec_video"),
-                options=["h264", "h265"],
-                format_func=lambda x: {
-                    "h264": t("codec_h264"),
-                    "h265": t("codec_h265"),
-                }[x],
-                index=0,
-                help=t("codec_help"),
-                key="codec_choice",
-            )
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        start_text = st.text_input(
+            t("start_time"),
+            value="",
+            help=t("time_format_help"),
+            placeholder="0:11",
+            key="start_text",
+        )
+    with c2:
+        end_text = st.text_input(
+            t("end_time"),
+            value="",
+            help=t("time_format_help"),
+            placeholder="6:55",
+            key="end_text",
+        )
 
-            # Quality preset
-            quality_preset = st.radio(
-                t("encoding_quality"),
-                options=["balanced", "high_quality"],
-                format_func=lambda x: {
-                    "balanced": t("quality_balanced"),
-                    "high_quality": t("quality_high"),
-                }[x],
-                index=0,
-                help=t("quality_help"),
-                key="quality_preset",
-            )
-
-            # Show current settings DYNAMICALLY
-            if codec_choice == "h264":
-                crf_value = "16" if quality_preset == "balanced" else "14"
-                preset_value = "slow" if quality_preset == "balanced" else "slower"
-                st.info(t("h264_settings", preset=preset_value, crf=crf_value))
-            else:
-                crf_value = "16" if quality_preset == "balanced" else "14"
-                preset_value = "slow" if quality_preset == "balanced" else "slower"
-                st.info(t("h265_settings", preset=preset_value, crf=crf_value))
-
-        c1, c2 = st.columns([1, 1])
-        with c1:
-            start_text = st.text_input(
-                t("start_time"),
-                value="",
-                help=t("time_format_help"),
-                placeholder="0:11",
-                key="start_text",
-            )
-        with c2:
-            end_text = st.text_input(
-                t("end_time"),
-                value="",
-                help=t("time_format_help"),
-                placeholder="6:55",
-                key="end_text",
-            )
-
-        st.info(t("sponsorblock_sections_info"))
+    st.info(t("sponsorblock_sections_info"))
 
 # Video quality selection with new strategy
 with st.expander(f"{t('quality_title')}", expanded=False):
@@ -3603,9 +3491,17 @@ def create_command_summary(cmd: list[str]) -> str:
     return " • ".join(summary_parts)
 
 
-def run_cmd(cmd: list[str], progress=None, status=None, info=None) -> int:
+def run_cmd(
+    cmd: list[str],
+    progress=None,
+    status=None,
+    info=None,
+    *,
+    runtime_state=None,
+) -> int:
     """Execute command with enhanced progress tracking and metrics display"""
     start_time = time.time()
+    state = adapt_runtime_state(runtime_state or st.session_state)
 
     # Create a user-friendly command summary instead of the full verbose command
     cmd_summary = create_command_summary(cmd)
@@ -3630,7 +3526,7 @@ def run_cmd(cmd: list[str], progress=None, status=None, info=None) -> int:
         ) as proc:
             for line in proc.stdout:
                 # Check for cancellation request
-                if st.session_state.get("download_cancelled", False):
+                if state.get("download_cancelled", False):
                     safe_push_log(t("download_cancelled"))
                     proc.terminate()
                     try:
@@ -3646,7 +3542,7 @@ def run_cmd(cmd: list[str], progress=None, status=None, info=None) -> int:
                 clean_line = ANSI_ESCAPE_PATTERN.sub("", line)
 
                 # Check if this message should be suppressed from user logs
-                if not should_suppress_message(clean_line):
+                if not should_suppress_message(clean_line, runtime_state=state):
                     push_log(clean_line)
 
                 # Track cookies expiration for user-friendly notification
@@ -3654,7 +3550,7 @@ def run_cmd(cmd: list[str], progress=None, status=None, info=None) -> int:
                     if not hasattr(metrics, "_cookies_expired_detected"):
                         metrics._cookies_expired_detected = True
                         # Set session state for persistent notification
-                        st.session_state["cookies_expired"] = True
+                        state["cookies_expired"] = True
                         push_log("🔄 " + t("cookies_expired_friendly_message"))
 
                 # Capture error messages for fallback strategies - use cleaned line
@@ -3662,33 +3558,36 @@ def run_cmd(cmd: list[str], progress=None, status=None, info=None) -> int:
                 if any(
                     keyword in line_lower for keyword in ["error", "failed", "unable"]
                 ):
-                    st.session_state["last_error"] = clean_line
+                    state["last_error"] = clean_line
 
                 # Check for format unavailable errors (premium codec authentication issues)
                 if is_format_unavailable_error(clean_line):
                     # Don't spam logs - only show hint once per profile attempt
-                    current_profile = st.session_state.get(
-                        "current_attempting_profile", ""
-                    )
+                    current_profile = state.get("current_attempting_profile", "")
                     hint_key = f"_format_hint_shown_{current_profile}"
 
                     if not getattr(
                         metrics, hint_key, False
-                    ) and not st.session_state.get(hint_key, False):
+                    ) and not state.get(hint_key, False):
                         push_log("")  # Empty line for readability
-                        log_format_unavailable_error_hint(clean_line, current_profile)
+                        log_format_unavailable_error_hint(
+                            clean_line,
+                            current_profile,
+                            runtime_state=state,
+                        )
                         push_log("")  # Empty line for readability
                         setattr(metrics, hint_key, True)
-                        st.session_state[hint_key] = (
-                            True  # Persist across different run_cmd calls
-                        )
+                        state[hint_key] = True  # Persist across different run_cmd calls
 
                 # Check for HTTP 403 and other authentication errors
                 elif is_authentication_error(clean_line):
                     # Don't spam logs - only show hint once per download
                     if not getattr(metrics, "_auth_hint_shown", False):
                         push_log("")  # Empty line for readability
-                        log_authentication_error_hint(clean_line)
+                        log_authentication_error_hint(
+                            clean_line,
+                            runtime_state=state,
+                        )
                         push_log("")  # Empty line for readability
                         metrics._auth_hint_shown = True
 
@@ -3897,6 +3796,177 @@ if submitted:
         ensure_dir(dest_dir)
 
         push_log(f"📁 Destination folder: {dest_dir}")
+
+        # All downloads now run as detached background jobs.
+        use_background_jobs = True
+        if use_background_jobs:
+            site_name = derive_site_name(url)
+
+            if is_playlist_mode:
+                playlist_name = filename or st.session_state.get("playlist_title", "Playlist")
+                playlist_id = st.session_state.get("playlist_id", "unknown")
+                playlist_to_download = st.session_state.get("playlist_to_download", [])
+                playlist_entries = st.session_state.get("playlist_entries", [])
+
+                if not playlist_to_download:
+                    st.success(t("playlist_all_downloaded"))
+                    st.session_state.download_finished = True
+                    st.stop()
+
+                playlist_workspace = ensure_playlist_workspace(
+                    TMP_DOWNLOAD_FOLDER, "youtube", playlist_id
+                )
+                playlist_dest = dest_dir / sanitize_filename(playlist_name)
+                ensure_dir(playlist_dest)
+
+                url_info = st.session_state.get("url_info", {})
+                url_info_path = st.session_state.get("url_info_path")
+                playlist_url_info_path = playlist_workspace / "url_info.json"
+                if url_info_path and Path(url_info_path).exists():
+                    if not playlist_url_info_path.exists():
+                        shutil.copy2(url_info_path, playlist_url_info_path)
+                elif url_info and "error" not in url_info:
+                    with open(playlist_url_info_path, "w", encoding="utf-8") as f:
+                        json.dump(url_info, f, indent=2, ensure_ascii=False)
+
+                existing_status = load_playlist_status(playlist_workspace)
+                if not existing_status:
+                    create_playlist_status(
+                        playlist_workspace=playlist_workspace,
+                        url=url,
+                        playlist_id=playlist_id,
+                        playlist_title=playlist_name,
+                        entries=playlist_entries,
+                    )
+                else:
+                    videos_status = existing_status.get("videos", {})
+                    for entry in playlist_entries:
+                        video_id = entry.get("id", "")
+                        if video_id and video_id not in videos_status:
+                            videos_status[video_id] = {
+                                "title": entry.get("title", "Unknown"),
+                                "url": entry.get("url", ""),
+                                "status": "pending",
+                                "downloaded_at": None,
+                                "error": None,
+                            }
+                    save_playlist_status(playlist_workspace, existing_status)
+
+                title_pattern = st.session_state.get(
+                    "playlist_title_pattern",
+                    DEFAULT_PLAYLIST_TITLE_PATTERN,
+                )
+                add_playlist_download_attempt(
+                    playlist_workspace=playlist_workspace,
+                    custom_title=playlist_name,
+                    playlist_location=video_subfolder,
+                    title_pattern=title_pattern,
+                )
+
+                playlist_already_downloaded = st.session_state.get(
+                    "playlist_already_downloaded",
+                    [],
+                )
+                for entry in playlist_already_downloaded:
+                    video_id = entry.get("id", "")
+                    if video_id:
+                        mark_video_as_skipped(playlist_workspace, video_id)
+
+                enqueue_playlist_job(
+                    background_job_store,
+                    url=url,
+                    playlist_id=playlist_id,
+                    playlist_title=playlist_name,
+                    site=site_name,
+                    destination_dir=playlist_dest,
+                    tmp_download_folder=TMP_DOWNLOAD_FOLDER,
+                    playlist_entries=playlist_to_download,
+                    config={
+                        **build_background_job_config_snapshot(
+                            base_output=playlist_name,
+                            embed_chapters=embed_chapters,
+                            embed_subs=embed_subs,
+                            ytdlp_custom_args=st.session_state.get(
+                                "ytdlp_custom_args",
+                                "",
+                            ),
+                            do_cut=do_cut,
+                            start_sec=start_sec,
+                            end_sec=end_sec,
+                            cutting_mode=st.session_state.get("cutting_mode", "keyframes"),
+                            subs_selected=subs_selected,
+                            sb_choice=sb_choice,
+                            requested_format_id=None,
+                        ),
+                        "playlist_workspace": str(playlist_workspace),
+                        "playlist_title_pattern": title_pattern,
+                        "playlist_total_count": len(playlist_entries),
+                        "playlist_channel": st.session_state.get("playlist_channel", ""),
+                    },
+                    max_parallelism=4,
+                )
+
+                st.session_state.download_finished = True
+                st.session_state["background_job_notice"] = t(
+                    "background_job_queued_playlist",
+                    title=playlist_name,
+                    count=len(playlist_to_download),
+                )
+                st.rerun()
+
+            clean_url = sanitize_url(url)
+            tmp_url_workspace = st.session_state.get("tmp_url_workspace")
+            if not tmp_url_workspace:
+                st.error(t("error_video_workspace_not_initialized"))
+                st.session_state.download_finished = True
+                st.stop()
+
+            resolved_title = (
+                filename
+                or st.session_state.get("url_info", {}).get("title")
+                or "video"
+            )
+            chosen_format_profiles = st.session_state.get("chosen_format_profiles", [])
+            requested_format_id = None
+            if chosen_format_profiles:
+                requested_format_id = chosen_format_profiles[0].get("format_id")
+
+            add_download_attempt(
+                tmp_url_workspace=Path(tmp_url_workspace),
+                custom_title=resolved_title,
+                video_location=video_subfolder,
+                requested_format_id=requested_format_id,
+            )
+
+            enqueue_video_job(
+                background_job_store,
+                url=clean_url,
+                title=resolved_title,
+                site=site_name,
+                destination_dir=dest_dir,
+                tmp_download_folder=TMP_DOWNLOAD_FOLDER,
+                base_output=resolved_title,
+                config=build_background_job_config_snapshot(
+                    base_output=resolved_title,
+                    embed_chapters=embed_chapters,
+                    embed_subs=embed_subs,
+                    ytdlp_custom_args=st.session_state.get("ytdlp_custom_args", ""),
+                    do_cut=do_cut,
+                    start_sec=start_sec,
+                    end_sec=end_sec,
+                    cutting_mode=st.session_state.get("cutting_mode", "keyframes"),
+                    subs_selected=subs_selected,
+                    sb_choice=sb_choice,
+                    requested_format_id=requested_format_id,
+                ),
+            )
+
+            st.session_state.download_finished = True
+            st.session_state["background_job_notice"] = t(
+                "background_job_queued_single",
+                title=resolved_title,
+            )
+            st.rerun()
 
         # === PLAYLIST DOWNLOAD MODE ===
         if is_playlist_mode:

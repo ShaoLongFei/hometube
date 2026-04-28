@@ -8,6 +8,7 @@ for better user experience and debugging.
 import streamlit as st
 
 from app.constants import AUTH_ERROR_PATTERNS
+from app.download_runtime_state import adapt_runtime_state
 from app.file_system_utils import is_valid_cookie_file
 
 # === LOGGING FUNCTIONS ===
@@ -86,9 +87,10 @@ def is_cookies_expired_warning(message: str) -> bool:
     return any(pattern in message_lower for pattern in cookies_patterns)
 
 
-def should_suppress_message(message: str) -> bool:
+def should_suppress_message(message: str, runtime_state=None) -> bool:
     """Check if a message should be suppressed from user logs"""
     message_lower = message.lower()
+    state = adapt_runtime_state(runtime_state or st.session_state)
 
     # Suppress empty lines
     if message.strip() == "":
@@ -105,9 +107,9 @@ def should_suppress_message(message: str) -> bool:
     # Suppress repetitive PO Token warnings (shown once per session)
     if "po token" in message_lower and "gvs" in message_lower:
         session_key = "po_token_warning_shown"
-        if st.session_state.get(session_key, False):
+        if state.get(session_key, False):
             return True  # Suppress repeated warnings
-        st.session_state[session_key] = True
+        state[session_key] = True
         # Allow first warning to show, but simplify it
         return False
 
@@ -218,9 +220,10 @@ def log_title(title: str, underline_char: str = "─"):
 # === HELPER FUNCTIONS ===
 
 
-def _get_current_cookies_method() -> str:
+def _get_current_cookies_method(runtime_state=None) -> str:
     """Get current cookies method from session state"""
-    return st.session_state.get("cookies_method", "none")
+    state = adapt_runtime_state(runtime_state or st.session_state)
+    return state.get("cookies_method", "none")
 
 
 def _log_cookies_method_status(cookies_method: str) -> None:
@@ -255,7 +258,7 @@ def _log_strategy_header(
 # === ERROR HINT FUNCTIONS ===
 
 
-def log_http_403_error_hint(error_message: str = ""):
+def log_http_403_error_hint(error_message: str = "", runtime_state=None):
     """Log specific guidance for HTTP 403 errors - often signature/cookie related"""
     safe_push_log("🚫 HTTP 403 Forbidden Error Detected")
     safe_push_log("🔐 This is typically a signature verification or cookie issue")
@@ -270,12 +273,13 @@ def log_http_403_error_hint(error_message: str = ""):
         safe_push_log("   • These signatures expire quickly and require fresh cookies")
         safe_push_log("")
 
-    cookies_method = _get_current_cookies_method()
+    state = adapt_runtime_state(runtime_state or st.session_state)
+    cookies_method = _get_current_cookies_method(state)
 
     safe_push_log("💡 IMMEDIATE SOLUTIONS:")
     _log_authentication_solutions(cookies_method)
     if cookies_method == "browser":
-        browser = st.session_state.get("browser_select", "chrome")
+        browser = state.get("browser_select", "chrome")
         safe_push_log(
             f"   4. 📋 Make sure you're actively logged into YouTube in {browser}"
         )
@@ -286,18 +290,19 @@ def log_http_403_error_hint(error_message: str = ""):
     )
 
 
-def log_authentication_error_hint(error_message: str = ""):
+def log_authentication_error_hint(error_message: str = "", runtime_state=None):
     """Log context-aware authentication error messages"""
+    state = adapt_runtime_state(runtime_state or st.session_state)
     # Prevent spam - only show once per download session
     session_key = "auth_hint_shown_this_download"
-    if st.session_state.get(session_key, False):
+    if state.get(session_key, False):
         return
 
-    st.session_state[session_key] = True
+    state[session_key] = True
 
     # Check if this is specifically an HTTP 403 error
     if is_http_403_error(error_message):
-        log_http_403_error_hint(error_message)
+        log_http_403_error_hint(error_message, runtime_state=state)
         return
 
     safe_push_log("🍪 This appears to be a cookies/authentication issue")
@@ -314,7 +319,7 @@ def log_authentication_error_hint(error_message: str = ""):
         YOUTUBE_COOKIES_FILE_PATH = os.getenv("YOUTUBE_COOKIES_FILE_PATH", "")
 
     # Check current cookie configuration and provide specific guidance
-    cookies_method = st.session_state.get("cookies_method", "none")
+    cookies_method = state.get("cookies_method", "none")
 
     if cookies_method == "none":
         safe_push_log("❌ No cookies configured - video likely requires authentication")
@@ -333,7 +338,7 @@ def log_authentication_error_hint(error_message: str = ""):
             safe_push_log("❌ Cookies file configured but invalid/missing")
             safe_push_log("💡 SOLUTION: Fix your cookies file configuration")
     elif cookies_method == "browser":
-        browser = st.session_state.get("browser_select", "chrome")
+        browser = state.get("browser_select", "chrome")
         safe_push_log(f"⏰ Browser cookies configured ({browser}) but may be expired")
         safe_push_log("💡 SOLUTION: Refresh your browser authentication")
         safe_push_log(f"   • Make sure you're logged into YouTube in {browser}")
@@ -345,18 +350,19 @@ def log_authentication_error_hint(error_message: str = ""):
 
 
 def log_format_unavailable_error_hint(
-    error_message: str = "", current_profile_name: str = ""
+    error_message: str = "", current_profile_name: str = "", runtime_state=None
 ):
     """Log specific guidance for format unavailable errors - often auth issues with premium codecs"""
+    state = adapt_runtime_state(runtime_state or st.session_state)
 
     # Prevent spam - only show detailed explanation once per profile
     session_key = f"format_hint_shown_{current_profile_name}"
-    if st.session_state.get(session_key, False):
+    if state.get(session_key, False):
         # Just show brief message for subsequent failures
         safe_push_log("⚠️ Format rejected (authentication limitation)")
         return
 
-    st.session_state[session_key] = True
+    state[session_key] = True
 
     # Analyze the profile being attempted
     profile_info = ""
@@ -382,7 +388,7 @@ def log_format_unavailable_error_hint(
     )
     safe_push_log("")
 
-    cookies_method = _get_current_cookies_method()
+    cookies_method = _get_current_cookies_method(state)
 
     if cookies_method == "none":
         safe_push_log("🔧 SOLUTION: Enable authentication cookies for premium formats")
