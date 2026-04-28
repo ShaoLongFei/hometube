@@ -5,6 +5,7 @@ Real single-video job handler for detached worker execution.
 from __future__ import annotations
 
 import inspect
+from dataclasses import dataclass
 from pathlib import Path
 
 from app.config import YOUTUBE_CLIENT_FALLBACKS, get_settings
@@ -28,7 +29,7 @@ from app.video_cache_backend import check_existing_video_file
 from app.video_download_backend import DownloadAttemptResult, execute_video_download
 from app.video_download_service import smart_download_with_profiles
 from app.video_file_ops import find_final_video_file, organize_downloaded_video_file
-from app.video_postprocess_backend import postprocess_video_file
+from app.video_postprocess_backend import VideoPostprocessResult, postprocess_video_file
 from app.video_workspace_backend import (
     compute_workspace_profiles,
     prepare_video_workspace,
@@ -72,6 +73,63 @@ class _JobProgressCallbacks:
         self.log(message)
 
 
+@dataclass(frozen=True)
+class DetachedVideoJobResult:
+    """Detached worker result for one executable video item."""
+
+    return_code: int
+    final_file: Path | None
+    error_message: str | None
+    postprocess_result: VideoPostprocessResult | None = None
+
+
+def _coerce_download_result(result) -> DetachedVideoJobResult:
+    """Normalize legacy tuple returns into a structured detached result."""
+    if isinstance(result, DetachedVideoJobResult):
+        return result
+    if isinstance(result, tuple) and len(result) == 3:
+        return DetachedVideoJobResult(
+            return_code=result[0],
+            final_file=result[1],
+            error_message=result[2],
+        )
+    raise TypeError(
+        "download_executor must return a DetachedVideoJobResult or "
+        "(return_code, final_file, error_message) tuple"
+    )
+
+
+def _format_audio_summary(postprocess_result: VideoPostprocessResult) -> str:
+    """Create a compact audio codec summary for persistent UI display."""
+    inspection = postprocess_result.inspection
+    if inspection.audio_codecs and all(codec == "aac" for codec in inspection.audio_codecs):
+        if len(inspection.audio_codecs) == 1:
+            return "AAC-LC"
+        return f"AAC-LC x{len(inspection.audio_codecs)}"
+    return ", ".join(codec.upper() for codec in inspection.audio_codecs) or "unknown"
+
+
+def _persist_delivery_metadata(
+    store: JobStore | None,
+    item_id: str,
+    postprocess_result: VideoPostprocessResult | None,
+) -> None:
+    """Persist delivery metadata when a structured postprocess result is available."""
+    if store is None or postprocess_result is None:
+        return
+
+    store.update_job_item_delivery(
+        item_id,
+        normalization_required=postprocess_result.normalization_required,
+        normalization_succeeded=postprocess_result.normalization_succeeded,
+        final_container=postprocess_result.inspection.container,
+        final_video_codec=postprocess_result.inspection.video_codec,
+        final_audio_summary=_format_audio_summary(postprocess_result),
+        final_codec_summary=postprocess_result.codec_summary,
+        delivery_warning=postprocess_result.warning_message,
+    )
+
+
 def _call_download_executor(
     download_executor,
     request,
@@ -100,7 +158,7 @@ def execute_single_video_download_for_job(
     store: JobStore | None = None,
     job: dict | None = None,
     item: dict | None = None,
-) -> tuple[int, Path | None, str | None]:
+) -> DetachedVideoJobResult:
     """Execute the actual detached single-video download flow."""
     settings = get_settings()
     callbacks = _JobProgressCallbacks(store, job, item)
@@ -228,7 +286,11 @@ def execute_single_video_download_for_job(
         update_cached_format_status=update_format_status,
     )
     if result.return_code != 0 or result.final_file is None:
-        return result.return_code, result.final_file, result.error_message
+        return DetachedVideoJobResult(
+            return_code=result.return_code,
+            final_file=result.final_file,
+            error_message=result.error_message,
+        )
 
     metadata_context = {}
     url_info_path = request.video_workspace / "url_info.json"
@@ -248,7 +310,7 @@ def execute_single_video_download_for_job(
     metadata_title = request.base_output if (job or {}).get("kind") == "video" else None
 
     callbacks.stage("Post-processing video")
-    final_file = postprocess_video_file(
+    postprocess_result = postprocess_video_file(
         request,
         runtime_state,
         result.final_file,
@@ -265,7 +327,12 @@ def execute_single_video_download_for_job(
         cookies_resolver=_cookies_resolver,
         sponsor_segments_resolver=get_sponsorblock_segments,
     )
-    return result.return_code, final_file, result.error_message
+    return DetachedVideoJobResult(
+        return_code=result.return_code,
+        final_file=postprocess_result.final_path,
+        error_message=result.error_message,
+        postprocess_result=postprocess_result,
+    )
 
 
 def handle_video_job_item(
@@ -292,10 +359,10 @@ def handle_video_job_item(
         job=job,
         item=item,
     )
-    if isinstance(result, tuple):
-        return_code, final_file, error_message = result
-    else:
-        raise TypeError("download_executor must return a (return_code, final_file, error_message) tuple")
+    download_result = _coerce_download_result(result)
+    return_code = download_result.return_code
+    final_file = download_result.final_file
+    error_message = download_result.error_message
 
     if return_code != 0:
         raise RuntimeError(error_message or "Video job item failed")
@@ -308,6 +375,7 @@ def handle_video_job_item(
     move_to_destination(final_file, destination_path)
 
     if store is not None:
+        _persist_delivery_metadata(store, item["id"], download_result.postprocess_result)
         store.update_job_item_progress(
             item["id"],
             progress_percent=100.0,
@@ -345,12 +413,10 @@ def handle_playlist_job_item(
             job=job,
             item=item,
         )
-        if not isinstance(result, tuple):
-            raise TypeError(
-                "download_executor must return a (return_code, final_file, error_message) tuple"
-            )
-
-        return_code, final_file, error_message = result
+        download_result = _coerce_download_result(result)
+        return_code = download_result.return_code
+        final_file = download_result.final_file
+        error_message = download_result.error_message
         if return_code != 0:
             raise RuntimeError(error_message or "Playlist job item failed")
         if final_file is None:
@@ -381,6 +447,7 @@ def handle_playlist_job_item(
             },
         )
         if store is not None:
+            _persist_delivery_metadata(store, item["id"], download_result.postprocess_result)
             store.update_job_item_progress(
                 item["id"],
                 progress_percent=100.0,

@@ -106,6 +106,31 @@ class JobStore:
                     ON jobs(status);
                 """
             )
+            self._ensure_job_items_delivery_columns(conn)
+
+    @staticmethod
+    def _ensure_job_items_delivery_columns(conn: sqlite3.Connection) -> None:
+        """Add delivery metadata columns for older databases."""
+        existing_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(job_items)").fetchall()
+        }
+        required_columns = {
+            "normalization_required": "INTEGER",
+            "normalization_succeeded": "INTEGER",
+            "final_container": "TEXT",
+            "final_video_codec": "TEXT",
+            "final_audio_summary": "TEXT",
+            "final_codec_summary": "TEXT",
+            "delivery_warning": "TEXT",
+        }
+
+        for column_name, column_type in required_columns.items():
+            if column_name in existing_columns:
+                continue
+            conn.execute(
+                f"ALTER TABLE job_items ADD COLUMN {column_name} {column_type}"
+            )
 
     def create_job(
         self,
@@ -507,6 +532,54 @@ class JobStore:
                     eta_seconds,
                     status_message,
                     now,
+                    now,
+                    item_id,
+                ),
+            )
+
+    def update_job_item_delivery(
+        self,
+        item_id: str,
+        *,
+        normalization_required: bool | None = None,
+        normalization_succeeded: bool | None = None,
+        final_container: str | None = None,
+        final_video_codec: str | None = None,
+        final_audio_summary: str | None = None,
+        final_codec_summary: str | None = None,
+        delivery_warning: str | None = None,
+    ) -> None:
+        """Persist final delivery codec and warning metadata for one item."""
+        now = utc_now_iso()
+        with self._connect() as conn:
+            current = conn.execute(
+                "SELECT id FROM job_items WHERE id = ?",
+                (item_id,),
+            ).fetchone()
+            if not current:
+                raise KeyError(f"Unknown job item: {item_id}")
+
+            conn.execute(
+                """
+                UPDATE job_items
+                SET normalization_required = ?,
+                    normalization_succeeded = ?,
+                    final_container = COALESCE(?, final_container),
+                    final_video_codec = COALESCE(?, final_video_codec),
+                    final_audio_summary = COALESCE(?, final_audio_summary),
+                    final_codec_summary = COALESCE(?, final_codec_summary),
+                    delivery_warning = COALESCE(?, delivery_warning),
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    None if normalization_required is None else int(normalization_required),
+                    None if normalization_succeeded is None else int(normalization_succeeded),
+                    final_container,
+                    final_video_codec,
+                    final_audio_summary,
+                    final_codec_summary,
+                    delivery_warning,
                     now,
                     item_id,
                 ),

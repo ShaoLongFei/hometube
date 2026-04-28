@@ -254,6 +254,10 @@ Mets à jour le fichier de cookies où essaye l'option **cookies dans navigateur
     "background_jobs_progress": "{completed}/{total} élément(s) terminés",
     "background_job_queued_single": "Téléchargement en arrière-plan ajouté : {title}",
     "background_job_queued_playlist": "Playlist ajoutée en arrière-plan : {title} ({count} vidéo(s))",
+    "background_jobs_delivery_ready": "Fichier livré : {codec}",
+    "background_jobs_delivery_normalized": "Fichier final normalisé : {codec}",
+    "background_jobs_delivery_original_warning": "Fichier original livré : {codec}",
+    "background_jobs_delivery_warning_label": "Avertissement : {warning}",
     "playlist_cutting_shared_hint": "Le mode playlist applique la même plage temporelle à chaque vidéo.",
     "warning_file_not_found": "Téléchargement OK mais fichier final introuvable. Vérifie le dossier TMP.",
     # === LOG MESSAGES ===

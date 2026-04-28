@@ -5,6 +5,7 @@ Backend-friendly post-download video processing helpers.
 from __future__ import annotations
 
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -19,6 +20,16 @@ from app.subtitles_utils import (
     find_subtitle_files_optimized,
     process_subtitles_for_cutting,
 )
+from app.video_codec_inspection import (
+    CodecInspectionResult,
+    format_codec_summary,
+    needs_codec_normalization,
+    probe_video_codecs,
+)
+from app.video_codec_normalization import (
+    CodecNormalizationResult,
+    normalize_video_file,
+)
 from app.video_download_backend import SingleVideoDownloadRequest
 
 
@@ -28,6 +39,35 @@ def _noop_log(_message: str) -> None:
 
 def _noop_progress(_message: str) -> None:
     """Default no-op status updater."""
+
+
+@dataclass(frozen=True)
+class VideoPostprocessResult:
+    """Structured post-processing outcome for one deliverable video."""
+
+    final_path: Path
+    inspection: CodecInspectionResult
+    codec_summary: str
+    normalization_required: bool
+    normalization_succeeded: bool | None
+    warning_message: str | None = None
+
+
+def _cleanup_file(path: Path) -> None:
+    """Remove one obsolete workspace file if it still exists."""
+    if path.exists():
+        path.unlink()
+
+
+def _resolve_normalization_output_paths(
+    video_workspace: Path,
+    current_final_path: Path,
+) -> tuple[Path, Path]:
+    """Return the ffmpeg output path and canonical final MP4 path."""
+    canonical_final_path = tmp_files.get_final_path(video_workspace, "mp4")
+    if current_final_path == canonical_final_path:
+        return video_workspace / "final.normalized.mp4", canonical_final_path
+    return canonical_final_path, canonical_final_path
 
 
 def _resolve_cut_window(
@@ -102,7 +142,12 @@ def postprocess_video_file(
     find_subtitle_files_fn: Callable[[str, Path, list[str], bool], list[Path]] = find_subtitle_files_optimized,
     embed_subtitles_fn: Callable[[Path, list[Path]], bool] = embed_subtitles_manually,
     customize_metadata_fn: Callable[..., bool] = customize_video_metadata,
-) -> Path:
+    probe_video_codecs_fn: Callable[[Path], CodecInspectionResult] = probe_video_codecs,
+    needs_codec_normalization_fn: Callable[[CodecInspectionResult], bool] = needs_codec_normalization,
+    format_codec_summary_fn: Callable[[CodecInspectionResult], str] = format_codec_summary,
+    normalize_video_file_fn: Callable[..., CodecNormalizationResult] = normalize_video_file,
+    cleanup_file_fn: Callable[[Path], None] = _cleanup_file,
+) -> VideoPostprocessResult:
     """Apply cut/subtitle/metadata post-processing to one downloaded file."""
     state = adapt_runtime_state(runtime_state)
     final_source = downloaded_file
@@ -197,4 +242,48 @@ def postprocess_video_file(
                 progress_fn("Embedding subtitles")
                 embed_subtitles_fn(final_source, subtitle_files)
 
-    return final_source
+    progress_fn("Inspecting final codecs")
+    inspection = probe_video_codecs_fn(final_source)
+    normalization_required = needs_codec_normalization_fn(inspection)
+    normalization_succeeded: bool | None = None
+    warning_message = None
+
+    if normalization_required:
+        progress_fn("Normalizing final codecs")
+        normalization_output, canonical_final_path = _resolve_normalization_output_paths(
+            request.video_workspace,
+            final_source,
+        )
+        normalization = normalize_video_file_fn(
+            final_source,
+            normalization_output,
+            runtime_state=state,
+        )
+        normalization_succeeded = normalization.succeeded
+
+        if normalization.succeeded:
+            normalized_final_path = normalization.output_path
+            if normalized_final_path != canonical_final_path:
+                if canonical_final_path.exists() and canonical_final_path != final_source:
+                    cleanup_file_fn(canonical_final_path)
+                normalized_final_path.replace(canonical_final_path)
+                normalized_final_path = canonical_final_path
+
+            if final_source != normalized_final_path:
+                cleanup_file_fn(final_source)
+
+            final_source = normalized_final_path
+            inspection = probe_video_codecs_fn(final_source)
+        else:
+            warning_message = normalization.warning_message
+            if warning_message:
+                log_fn(warning_message)
+
+    return VideoPostprocessResult(
+        final_path=final_source,
+        inspection=inspection,
+        codec_summary=format_codec_summary_fn(inspection),
+        normalization_required=normalization_required,
+        normalization_succeeded=normalization_succeeded,
+        warning_message=warning_message,
+    )

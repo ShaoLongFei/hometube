@@ -211,3 +211,42 @@ class TestJobStore:
 
         assert len(logs) == 1
         assert logs[0]["message"] == "Second"
+
+    def test_update_job_item_delivery_persists_codec_normalization_fields(
+        self, tmp_path: Path
+    ):
+        from app.job_store import JobStore
+
+        store = JobStore(tmp_path / "jobs.db")
+        job_id = store.create_job(
+            kind="video",
+            url="https://example.com/watch?v=abc123",
+            title="Codec Video",
+            site="example.com",
+            destination_dir="/data/videos",
+            config={},
+            items=[_video_item("abc123", "Codec Video")],
+        )
+        item = store.get_job_items(job_id)[0]
+
+        store.update_job_item_delivery(
+            item["id"],
+            normalization_required=True,
+            normalization_succeeded=False,
+            final_container="webm",
+            final_video_codec="vp9",
+            final_audio_summary="OPUS",
+            final_codec_summary="WEBM / VP9 / OPUS",
+            delivery_warning="Codec normalization failed",
+        )
+
+        refreshed = store.get_job_item(item["id"])
+
+        assert refreshed is not None
+        assert refreshed["normalization_required"] == 1
+        assert refreshed["normalization_succeeded"] == 0
+        assert refreshed["final_container"] == "webm"
+        assert refreshed["final_video_codec"] == "vp9"
+        assert refreshed["final_audio_summary"] == "OPUS"
+        assert refreshed["final_codec_summary"] == "WEBM / VP9 / OPUS"
+        assert refreshed["delivery_warning"] == "Codec normalization failed"

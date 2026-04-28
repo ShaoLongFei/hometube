@@ -177,3 +177,24 @@ class TestTranslations:
                 )
         except ImportError:
             pytest.skip("Translation modules not available")
+
+    def test_codec_normalization_background_job_keys_exist(self):
+        """Background-job codec status labels should exist in every language."""
+        import pytest
+
+        try:
+            from app.translations import en, fr, zh
+
+            keys = [
+                "background_jobs_delivery_ready",
+                "background_jobs_delivery_normalized",
+                "background_jobs_delivery_original_warning",
+                "background_jobs_delivery_warning_label",
+            ]
+
+            for key in keys:
+                assert key in en.TRANSLATIONS, f"Missing key in English: {key}"
+                assert key in fr.TRANSLATIONS, f"Missing key in French: {key}"
+                assert key in zh.TRANSLATIONS, f"Missing key in Chinese: {key}"
+        except ImportError:
+            pytest.skip("Translation modules not available")

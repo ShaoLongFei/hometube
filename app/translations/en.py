@@ -256,6 +256,10 @@ Update your file cookies or try using **browser cookies** instead of file cookie
     "background_jobs_progress": "{completed}/{total} item(s) completed",
     "background_job_queued_single": "Queued background download: {title}",
     "background_job_queued_playlist": "Queued playlist background job: {title} ({count} video(s))",
+    "background_jobs_delivery_ready": "Delivered file: {codec}",
+    "background_jobs_delivery_normalized": "Normalized final file: {codec}",
+    "background_jobs_delivery_original_warning": "Delivered original file: {codec}",
+    "background_jobs_delivery_warning_label": "Warning: {warning}",
     "playlist_cutting_shared_hint": "Playlist mode applies the same time range to every video.",
     "warning_file_not_found": "Download OK but final file not found. Check TMP folder.",
     # === LOG MESSAGES ===

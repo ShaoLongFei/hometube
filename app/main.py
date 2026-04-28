@@ -1108,6 +1108,45 @@ def render_background_jobs_panel() -> None:
                 st.caption(f"{item_title} · {status_message}")
                 st.progress(item_progress)
 
+            settled_items = [
+                item
+                for item in reversed(items)
+                if item["status"] in {"completed", "failed"}
+                and (item.get("final_codec_summary") or item.get("delivery_warning"))
+            ]
+            for item in settled_items[:2]:
+                item_title = item.get("title") or item.get("video_url") or item["id"]
+                codec_summary = item.get("final_codec_summary")
+                warning_message = item.get("delivery_warning")
+                normalization_required = bool(item.get("normalization_required"))
+                normalization_succeeded = item.get("normalization_succeeded")
+
+                if codec_summary:
+                    if normalization_required and normalization_succeeded:
+                        delivery_message = t(
+                            "background_jobs_delivery_normalized",
+                            codec=codec_summary,
+                        )
+                    elif warning_message:
+                        delivery_message = t(
+                            "background_jobs_delivery_original_warning",
+                            codec=codec_summary,
+                        )
+                    else:
+                        delivery_message = t(
+                            "background_jobs_delivery_ready",
+                            codec=codec_summary,
+                        )
+                    st.caption(f"{item_title} · {delivery_message}")
+
+                if warning_message:
+                    st.caption(
+                        t(
+                            "background_jobs_delivery_warning_label",
+                            warning=warning_message,
+                        )
+                    )
+
             recent_logs = list(reversed(background_job_store.list_job_logs(job["id"], limit=3)))
             for log in recent_logs:
                 st.caption(log["message"])
