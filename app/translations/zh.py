@@ -184,6 +184,7 @@ TRANSLATIONS = {
     "background_jobs_status": "状态",
     "background_jobs_destination": "目标目录",
     "background_jobs_progress": "已完成 {completed}/{total} 项",
+    "background_jobs_temporarily_busy": "后台任务数据库正忙，稍后会自动重试...",
     "background_job_queued_single": "已加入后台下载队列：{title}",
     "background_job_queued_playlist": "已加入后台播放列表任务：{title}（{count} 个视频）",
     "background_jobs_delivery_ready": "已交付文件：{codec}",

@@ -1,4 +1,5 @@
 from pathlib import Path
+import sqlite3
 
 
 def _item(video_id: str, index: int = 1) -> dict:
@@ -258,7 +259,9 @@ class TestSchedulerIteration:
 
 
 class TestSchedulerLoop:
-    def test_run_scheduler_loop_recovers_dispatches_and_releases_lock(self, tmp_path: Path):
+    def test_run_scheduler_loop_recovers_dispatches_and_releases_lock(
+        self, tmp_path: Path
+    ):
         from app.job_runtime import run_scheduler_loop
 
         events: list[tuple[str, object]] = []
@@ -286,13 +289,62 @@ class TestSchedulerLoop:
             sleep_fn=lambda _seconds: events.append(("sleep", None)),
             should_stop=should_stop,
             recover_fn=lambda store: events.append(("recover", store.db_path)) or 1,
-            iteration_fn=lambda store: events.append(("iterate", store.db_path)) or ["item-1"],
+            iteration_fn=lambda store: events.append(("iterate", store.db_path))
+            or ["item-1"],
         )
 
         assert events == [
             ("acquire", None),
             ("recover", tmp_path / "jobs.db"),
             ("iterate", tmp_path / "jobs.db"),
+            ("release", None),
+        ]
+
+    def test_run_scheduler_loop_continues_after_transient_sqlite_lock(
+        self, tmp_path: Path
+    ):
+        from app.job_runtime import run_scheduler_loop
+
+        events: list[tuple[str, object]] = []
+
+        class FakeLock:
+            def acquire(self) -> bool:
+                events.append(("acquire", None))
+                return True
+
+            def release(self) -> None:
+                events.append(("release", None))
+
+        class FakeStore:
+            db_path = tmp_path / "jobs.db"
+
+        attempts = {"count": 0}
+
+        def should_stop() -> bool:
+            return attempts["count"] >= 2
+
+        def iterate(store):
+            attempts["count"] += 1
+            events.append(("iterate", attempts["count"]))
+            if attempts["count"] == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return ["item-1"]
+
+        run_scheduler_loop(
+            FakeStore(),
+            lock=FakeLock(),
+            sleep_fn=lambda _seconds: events.append(("sleep", None)),
+            should_stop=should_stop,
+            recover_fn=lambda store: events.append(("recover", store.db_path)) or 0,
+            iteration_fn=iterate,
+        )
+
+        assert events == [
+            ("acquire", None),
+            ("recover", tmp_path / "jobs.db"),
+            ("iterate", 1),
+            ("sleep", None),
+            ("iterate", 2),
             ("release", None),
         ]
 
@@ -367,4 +419,7 @@ class TestSchedulerLoop:
             "dead-thread",
             f"hometube-scheduler-{(tmp_path / 'jobs-restart.db').name}",
         ]
-        assert restarted.name == f"hometube-scheduler-{(tmp_path / 'jobs-restart.db').name}"
+        assert (
+            restarted.name
+            == f"hometube-scheduler-{(tmp_path / 'jobs-restart.db').name}"
+        )

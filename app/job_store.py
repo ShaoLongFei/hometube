@@ -4,16 +4,55 @@ SQLite-backed persistence for HomeTube background jobs.
 
 import json
 import sqlite3
+import time
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
+from typing import Callable, TypeVar
 from uuid import uuid4
 
 from app.job_models import JobItemStatus, JobStatus, SUCCESSFUL_JOB_ITEM_STATES
+
+SQLITE_BUSY_TIMEOUT_SECONDS = 15.0
+SQLITE_BUSY_TIMEOUT_MS = int(SQLITE_BUSY_TIMEOUT_SECONDS * 1000)
+SQLITE_LOCK_RETRY_ATTEMPTS = 3
+SQLITE_LOCK_RETRY_BASE_SECONDS = 0.1
+
+_T = TypeVar("_T")
 
 
 def utc_now_iso() -> str:
     """Return the current UTC timestamp as ISO-8601 text."""
     return datetime.now(timezone.utc).isoformat()
+
+
+def is_sqlite_lock_error(exc: BaseException) -> bool:
+    """Return True when sqlite reports transient lock contention."""
+    return isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).lower()
+
+
+def retry_sqlite_locks(func: Callable[..., _T]) -> Callable[..., _T]:
+    """Retry short SQLite operations when concurrent writers briefly hold a lock."""
+
+    @wraps(func)
+    def wrapper(self: "JobStore", *args: object, **kwargs: object) -> _T:
+        last_exc: sqlite3.OperationalError | None = None
+        for attempt in range(SQLITE_LOCK_RETRY_ATTEMPTS):
+            try:
+                return func(self, *args, **kwargs)
+            except sqlite3.OperationalError as exc:
+                if not is_sqlite_lock_error(exc):
+                    raise
+                last_exc = exc
+                if attempt >= SQLITE_LOCK_RETRY_ATTEMPTS - 1:
+                    break
+                time.sleep(SQLITE_LOCK_RETRY_BASE_SECONDS * (2**attempt))
+
+        if last_exc is None:
+            raise RuntimeError("SQLite retry failed without an OperationalError")
+        raise last_exc
+
+    return wrapper
 
 
 class JobStore:
@@ -25,14 +64,17 @@ class JobStore:
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=SQLITE_BUSY_TIMEOUT_SECONDS)
         conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+        conn.execute("PRAGMA synchronous = NORMAL")
         return conn
 
+    @retry_sqlite_locks
     def _init_schema(self) -> None:
         with self._connect() as conn:
-            conn.executescript(
-                """
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.executescript("""
                 CREATE TABLE IF NOT EXISTS jobs (
                     id TEXT PRIMARY KEY,
                     kind TEXT NOT NULL,
@@ -104,8 +146,7 @@ class JobStore:
                     ON job_items(status);
                 CREATE INDEX IF NOT EXISTS idx_jobs_status
                     ON jobs(status);
-                """
-            )
+                """)
             self._ensure_job_items_delivery_columns(conn)
 
     @staticmethod
@@ -132,6 +173,7 @@ class JobStore:
                 f"ALTER TABLE job_items ADD COLUMN {column_name} {column_type}"
             )
 
+    @retry_sqlite_locks
     def create_job(
         self,
         *,
@@ -205,20 +247,21 @@ class JobStore:
 
         return job_id
 
+    @retry_sqlite_locks
     def get_job(self, job_id: str) -> dict | None:
         """Return a job row as a plain dict."""
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return self._row_to_job_dict(row) if row else None
 
+    @retry_sqlite_locks
     def list_jobs(self) -> list[dict]:
         """List all jobs ordered by creation time."""
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM jobs ORDER BY created_at ASC"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM jobs ORDER BY created_at ASC").fetchall()
         return [self._row_to_job_dict(row) for row in rows]
 
+    @retry_sqlite_locks
     def get_job_items(self, job_id: str) -> list[dict]:
         """Return all items for a job ordered by playlist position."""
         with self._connect() as conn:
@@ -232,6 +275,7 @@ class JobStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    @retry_sqlite_locks
     def get_job_item(self, item_id: str) -> dict | None:
         """Return a single job item by id."""
         with self._connect() as conn:
@@ -241,6 +285,7 @@ class JobStore:
             ).fetchone()
         return dict(row) if row else None
 
+    @retry_sqlite_locks
     def update_job_item_status(
         self,
         item_id: str,
@@ -294,6 +339,7 @@ class JobStore:
                 ),
             )
 
+    @retry_sqlite_locks
     def claim_job_item(self, item_id: str, *, worker_pid: int | None = None) -> bool:
         """Atomically move a queued item into running state."""
         now = utc_now_iso()
@@ -318,6 +364,7 @@ class JobStore:
             )
         return result.rowcount == 1
 
+    @retry_sqlite_locks
     def refresh_job_status(self, job_id: str) -> dict:
         """Recompute aggregate job counters and lifecycle status from items."""
         items = self.get_job_items(job_id)
@@ -341,6 +388,8 @@ class JobStore:
 
         if running_items > 0:
             new_status = JobStatus.RUNNING.value
+        elif queued_items > 0:
+            new_status = JobStatus.QUEUED.value
         elif completed_items == len(items):
             new_status = JobStatus.COMPLETED.value
         elif failed_items > 0 and completed_items > 0:
@@ -351,19 +400,22 @@ class JobStore:
                 if cancelled_items == len(items)
                 else JobStatus.FAILED.value
             )
-        elif queued_items == len(items):
-            new_status = JobStatus.QUEUED.value
         else:
             new_status = JobStatus.QUEUED.value
 
         now = utc_now_iso()
         started_at = job["started_at"] or (now if running_items > 0 else None)
-        finished_at = now if new_status in {
-            JobStatus.COMPLETED.value,
-            JobStatus.PARTIALLY_FAILED.value,
-            JobStatus.FAILED.value,
-            JobStatus.CANCELLED.value,
-        } else None
+        finished_at = (
+            now
+            if new_status
+            in {
+                JobStatus.COMPLETED.value,
+                JobStatus.PARTIALLY_FAILED.value,
+                JobStatus.FAILED.value,
+                JobStatus.CANCELLED.value,
+            }
+            else None
+        )
 
         with self._connect() as conn:
             conn.execute(
@@ -393,6 +445,7 @@ class JobStore:
             raise KeyError(f"Unknown job after refresh: {job_id}")
         return refreshed
 
+    @retry_sqlite_locks
     def list_runnable_items(self) -> list[dict]:
         """Return queued items eligible for scheduler dispatch."""
         with self._connect() as conn:
@@ -419,6 +472,7 @@ class JobStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    @retry_sqlite_locks
     def list_running_items(self) -> list[dict]:
         """Return currently running job items."""
         with self._connect() as conn:
@@ -432,6 +486,7 @@ class JobStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    @retry_sqlite_locks
     def get_active_counts(self) -> dict:
         """Return running item counts globally and by job."""
         with self._connect() as conn:
@@ -448,6 +503,7 @@ class JobStore:
         per_job = {row["job_id"]: row["active_count"] for row in rows}
         return {"global": sum(per_job.values()), "per_job": per_job}
 
+    @retry_sqlite_locks
     def set_job_item_runtime(
         self,
         item_id: str,
@@ -490,6 +546,7 @@ class JobStore:
                 params,
             )
 
+    @retry_sqlite_locks
     def update_job_item_progress(
         self,
         item_id: str,
@@ -537,6 +594,7 @@ class JobStore:
                 ),
             )
 
+    @retry_sqlite_locks
     def update_job_item_delivery(
         self,
         item_id: str,
@@ -573,8 +631,16 @@ class JobStore:
                 WHERE id = ?
                 """,
                 (
-                    None if normalization_required is None else int(normalization_required),
-                    None if normalization_succeeded is None else int(normalization_succeeded),
+                    (
+                        None
+                        if normalization_required is None
+                        else int(normalization_required)
+                    ),
+                    (
+                        None
+                        if normalization_succeeded is None
+                        else int(normalization_succeeded)
+                    ),
                     final_container,
                     final_video_codec,
                     final_audio_summary,
@@ -585,6 +651,7 @@ class JobStore:
                 ),
             )
 
+    @retry_sqlite_locks
     def record_job_log(
         self,
         *,
@@ -606,6 +673,7 @@ class JobStore:
             )
         return log_id
 
+    @retry_sqlite_locks
     def list_job_logs(self, job_id: str, *, limit: int = 20) -> list[dict]:
         """Return recent structured logs for one job, newest first."""
         with self._connect() as conn:

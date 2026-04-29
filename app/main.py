@@ -1,7 +1,7 @@
 # Standard library imports
 import json
-import os
 import shutil
+import sqlite3
 import subprocess
 import time
 from pathlib import Path
@@ -140,7 +140,7 @@ from app.playlist_sync import (
 )
 from app.download_runtime_state import adapt_runtime_state
 from app.job_runtime import ensure_scheduler_thread_started
-from app.job_store import JobStore
+from app.job_store import JobStore, is_sqlite_lock_error
 from app.job_submission import (
     derive_site_name,
     enqueue_playlist_job,
@@ -1063,7 +1063,14 @@ def build_background_job_config_snapshot(
 @st.fragment(run_every=2.0)
 def render_background_jobs_panel() -> None:
     """Render a read-only view of persisted background jobs."""
-    jobs = list(reversed(background_job_store.list_jobs()))
+    try:
+        jobs = list(reversed(background_job_store.list_jobs()))
+    except sqlite3.OperationalError as exc:
+        if not is_sqlite_lock_error(exc):
+            raise
+        with st.expander(t("background_jobs_title"), expanded=False):
+            st.caption(t("background_jobs_temporarily_busy"))
+        return
 
     with st.expander(t("background_jobs_title"), expanded=False):
         if not jobs:
@@ -1074,14 +1081,22 @@ def render_background_jobs_panel() -> None:
             title = job.get("title") or job.get("url") or job["id"]
             total_items = job.get("total_items", 0)
             completed_items = job.get("completed_items", 0)
-            items = background_job_store.get_job_items(job["id"])
+            try:
+                items = background_job_store.get_job_items(job["id"])
+            except sqlite3.OperationalError as exc:
+                if not is_sqlite_lock_error(exc):
+                    raise
+                st.caption(t("background_jobs_temporarily_busy"))
+                continue
             running_items = [item for item in items if item["status"] == "running"]
             in_flight_progress = sum(
                 min(max(float(item.get("progress_percent") or 0.0), 0.0), 100.0) / 100.0
                 for item in running_items
             )
             progress_total = max(total_items, 1)
-            progress_value = min((completed_items + in_flight_progress) / progress_total, 1.0)
+            progress_value = min(
+                (completed_items + in_flight_progress) / progress_total, 1.0
+            )
 
             st.markdown(f"**{title}**")
             st.caption(
@@ -1148,7 +1163,14 @@ def render_background_jobs_panel() -> None:
                         )
                     )
 
-            recent_logs = list(reversed(background_job_store.list_job_logs(job["id"], limit=3)))
+            try:
+                recent_logs = list(
+                    reversed(background_job_store.list_job_logs(job["id"], limit=3))
+                )
+            except sqlite3.OperationalError as exc:
+                if not is_sqlite_lock_error(exc):
+                    raise
+                recent_logs = []
             for log in recent_logs:
                 st.caption(log["message"])
 

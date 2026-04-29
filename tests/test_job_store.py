@@ -1,4 +1,5 @@
 from pathlib import Path
+import sqlite3
 
 
 def _video_item(video_id: str, title: str, item_index: int = 1) -> dict:
@@ -12,6 +13,20 @@ def _video_item(video_id: str, title: str, item_index: int = 1) -> dict:
 
 
 class TestJobStore:
+    def test_database_uses_wal_and_waits_for_busy_writers(self, tmp_path: Path):
+        from app.job_store import JobStore
+
+        db_path = tmp_path / "jobs.db"
+        store = JobStore(db_path)
+
+        with sqlite3.connect(db_path) as conn:
+            journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        with store._connect() as conn:
+            busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+
+        assert journal_mode == "wal"
+        assert busy_timeout >= 15000
+
     def test_create_video_job_persists_items(self, tmp_path: Path):
         from app.job_store import JobStore
 
@@ -91,6 +106,39 @@ class TestJobStore:
         assert job["status"] == "completed"
         assert job["completed_items"] == 2
         assert job["failed_items"] == 0
+
+    def test_refresh_job_status_keeps_job_runnable_when_queued_items_remain(
+        self, tmp_path: Path
+    ):
+        from app.job_store import JobStore
+
+        store = JobStore(tmp_path / "jobs.db")
+        job_id = store.create_job(
+            kind="playlist",
+            url="https://example.com/playlist?id=pl-mixed",
+            title="Mixed Playlist",
+            site="example.com",
+            destination_dir="/data/videos",
+            config={},
+            items=[
+                _video_item("done", "Done", 1),
+                _video_item("failed", "Failed", 2),
+                _video_item("waiting", "Waiting", 3),
+            ],
+        )
+
+        items = store.get_job_items(job_id)
+        store.update_job_item_status(items[0]["id"], "completed")
+        store.update_job_item_status(items[1]["id"], "failed")
+
+        job = store.refresh_job_status(job_id)
+        runnable_items = store.list_runnable_items()
+
+        assert job["status"] == "queued"
+        assert job["completed_items"] == 1
+        assert job["failed_items"] == 1
+        assert job["finished_at"] is None
+        assert [item["id"] for item in runnable_items] == [items[2]["id"]]
 
     def test_list_runnable_items_excludes_running_and_terminal_states(
         self, tmp_path: Path

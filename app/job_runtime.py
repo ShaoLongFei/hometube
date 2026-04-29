@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import errno
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -15,7 +16,7 @@ from typing import Callable
 
 from app.job_models import JobItemStatus
 from app.job_scheduler import select_dispatch_batch
-from app.job_store import JobStore
+from app.job_store import JobStore, is_sqlite_lock_error
 
 _scheduler_threads: dict[str, threading.Thread] = {}
 
@@ -280,9 +281,21 @@ def run_scheduler_loop(
     )
 
     try:
-        recover(store)
+        try:
+            recover(store)
+        except sqlite3.OperationalError as exc:
+            if not is_sqlite_lock_error(exc):
+                raise
         while not should_stop():
-            iterate(store)
+            try:
+                iterate(store)
+            except sqlite3.OperationalError as exc:
+                if not is_sqlite_lock_error(exc):
+                    raise
+                if should_stop():
+                    break
+                sleep_fn(poll_interval_seconds)
+                continue
             if should_stop():
                 break
             sleep_fn(poll_interval_seconds)
@@ -302,7 +315,9 @@ def ensure_scheduler_thread_started(
     """Start one in-process scheduler thread per jobs database path."""
     registry_key = str(Path(store.db_path).resolve())
     existing = _scheduler_threads.get(registry_key)
-    existing_is_alive = getattr(existing, "is_alive", lambda: True) if existing is not None else None
+    existing_is_alive = (
+        getattr(existing, "is_alive", lambda: True) if existing is not None else None
+    )
     if existing is not None and existing_is_alive():
         return existing
     if existing is not None and not existing_is_alive():
