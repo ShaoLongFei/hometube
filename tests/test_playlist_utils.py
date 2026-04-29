@@ -217,6 +217,27 @@ class TestExistingVideosCheck:
         assert len(already) == 1
         assert already[0]["id"] == "vid2"
 
+    def test_check_pattern_match_uses_default_flat_playlist_title(self, tmp_path):
+        """Flat playlist entries without titles should match queued fallback names."""
+        dest = tmp_path / "videos"
+        dest.mkdir()
+
+        (dest / "02 - Video 2.mkv").touch()
+        entries = [
+            {"id": "vid1", "playlist_index": 1},
+            {"id": "vid2", "playlist_index": 2},
+        ]
+
+        already, to_download, total = check_existing_videos_in_destination(
+            dest,
+            entries,
+            title_pattern="{idx} - {pretty(title)}.{ext}",
+        )
+
+        assert total == 2
+        assert [entry["id"] for entry in already] == ["vid2"]
+        assert [entry["id"] for entry in to_download] == ["vid1"]
+
 
 class TestDownloadRatio:
     """Test download ratio calculations"""

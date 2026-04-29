@@ -214,11 +214,11 @@ def check_existing_videos_in_destination(
     to_download = []
 
     for entry in playlist_entries:
-        video_title = entry.get("title", "")
-        video_id = entry.get("id", "")
         playlist_index = entry.get("playlist_index", 1)
+        video_title = entry.get("title") or f"Video {playlist_index}"
+        video_id = entry.get("id", "")
 
-        if not video_title and not video_id:
+        if not entry.get("title") and not video_id:
             to_download.append(entry)
             continue
 
