@@ -33,6 +33,7 @@ from app.video_cache_backend import check_existing_video_file
 from app.video_download_backend import DownloadAttemptResult, execute_video_download
 from app.video_download_service import smart_download_with_profiles
 from app.video_file_ops import find_final_video_file, organize_downloaded_video_file
+from app.video_codec_inspection import format_audio_summary
 from app.video_postprocess_backend import VideoPostprocessResult, postprocess_video_file
 from app.video_workspace_backend import (
     compute_workspace_profiles,
@@ -106,13 +107,7 @@ def _coerce_download_result(result) -> DetachedVideoJobResult:
 def _format_audio_summary(postprocess_result: VideoPostprocessResult) -> str:
     """Create a compact audio codec summary for persistent UI display."""
     inspection = postprocess_result.inspection
-    if inspection.audio_codecs and all(
-        codec == "aac" for codec in inspection.audio_codecs
-    ):
-        if len(inspection.audio_codecs) == 1:
-            return "AAC-LC"
-        return f"AAC-LC x{len(inspection.audio_codecs)}"
-    return ", ".join(codec.upper() for codec in inspection.audio_codecs) or "unknown"
+    return format_audio_summary(inspection.audio_codecs, inspection.audio_profiles)
 
 
 def _bool_config_value(value: object, *, default: bool) -> bool:

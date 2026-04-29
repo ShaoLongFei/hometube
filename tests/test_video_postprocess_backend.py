@@ -2,7 +2,9 @@ from pathlib import Path
 
 
 class TestVideoPostprocessBackend:
-    def test_postprocess_video_file_runs_cut_pipeline_when_requested(self, tmp_path: Path):
+    def test_postprocess_video_file_runs_cut_pipeline_when_requested(
+        self, tmp_path: Path
+    ):
         from app.download_runtime_state import MemoryRuntimeState
         from app.video_codec_inspection import CodecInspectionResult
         from app.video_download_backend import SingleVideoDownloadRequest
@@ -44,7 +46,9 @@ class TestVideoPostprocessBackend:
             MemoryRuntimeState(),
             source_file,
             run_command_fn=fake_run_command,
-            process_subtitles_fn=lambda base_output, tmp_video_dir, subtitle_languages, start_time, duration: [("en", workspace / "subtitles-cut.en.srt")],
+            process_subtitles_fn=lambda base_output, tmp_video_dir, subtitle_languages, start_time, duration: [
+                ("en", workspace / "subtitles-cut.en.srt")
+            ],
             build_cut_command_fn=lambda final_tmp, actual_start, duration, processed_subtitle_files, cut_output, cut_ext: [
                 "ffmpeg",
                 str(actual_start),
@@ -52,7 +56,10 @@ class TestVideoPostprocessBackend:
                 str(cut_output),
             ],
             get_keyframes_fn=lambda _path: [0.0, 12.0, 42.0],
-            find_nearest_keyframes_fn=lambda keyframes, start_sec, end_sec: (12.0, 42.0),
+            find_nearest_keyframes_fn=lambda keyframes, start_sec, end_sec: (
+                12.0,
+                42.0,
+            ),
             check_required_subtitles_embedded_fn=lambda video_path, langs: True,
             customize_metadata_fn=lambda *args, **kwargs: True,
             probe_video_codecs_fn=lambda path: CodecInspectionResult(
@@ -80,7 +87,9 @@ class TestVideoPostprocessBackend:
         final_file = workspace / "final.mkv"
         final_file.write_bytes(b"video")
         subtitle_file = workspace / "subtitles.en.srt"
-        subtitle_file.write_text("1\n00:00:00,000 --> 00:00:01,000\nhello\n", encoding="utf-8")
+        subtitle_file.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nhello\n", encoding="utf-8"
+        )
 
         metadata_calls: list[tuple[Path, str, dict]] = []
         embed_calls: list[list[Path]] = []
@@ -112,9 +121,17 @@ class TestVideoPostprocessBackend:
                 "webpage_url": request.video_url,
             },
             check_required_subtitles_embedded_fn=lambda video_path, langs: False,
-            find_subtitle_files_fn=lambda base_output, tmp_video_dir, subtitle_languages, is_cut=False: [subtitle_file],
-            embed_subtitles_fn=lambda video_path, subtitle_files: embed_calls.append(subtitle_files) or True,
-            customize_metadata_fn=lambda video_path, title, **kwargs: metadata_calls.append((video_path, title, kwargs)) or True,
+            find_subtitle_files_fn=lambda base_output, tmp_video_dir, subtitle_languages, is_cut=False: [
+                subtitle_file
+            ],
+            embed_subtitles_fn=lambda video_path, subtitle_files: embed_calls.append(
+                subtitle_files
+            )
+            or True,
+            customize_metadata_fn=lambda video_path, title, **kwargs: metadata_calls.append(
+                (video_path, title, kwargs)
+            )
+            or True,
             probe_video_codecs_fn=lambda path: CodecInspectionResult(
                 container="mkv",
                 video_codec="h264",
@@ -240,7 +257,9 @@ class TestVideoPostprocessBackend:
         assert result.codec_summary == "MP4 / H.264 / AAC-LC"
         assert result.warning_message is None
 
-    def test_postprocess_video_file_normalizes_non_compliant_output(self, tmp_path: Path):
+    def test_postprocess_video_file_normalizes_non_compliant_output(
+        self, tmp_path: Path
+    ):
         from app.download_runtime_state import MemoryRuntimeState
         from app.video_codec_inspection import CodecInspectionResult
         from app.video_codec_normalization import CodecNormalizationResult
@@ -251,9 +270,10 @@ class TestVideoPostprocessBackend:
         workspace.mkdir()
         final_file = workspace / "final.mkv"
         final_file.write_bytes(b"video")
-        normalized_file = workspace / "final.mp4"
+        normalized_file = workspace / "final.normalized.mkv"
         inspected_paths: list[Path] = []
         normalization_durations: list[float | None] = []
+        probe_count = 0
 
         request = SingleVideoDownloadRequest(
             video_url="https://example.com/watch?v=abc123",
@@ -271,8 +291,10 @@ class TestVideoPostprocessBackend:
         )
 
         def fake_probe(path: Path):
+            nonlocal probe_count
+            probe_count += 1
             inspected_paths.append(path)
-            if path == final_file:
+            if probe_count == 1:
                 return CodecInspectionResult(
                     container="mkv",
                     video_codec="vp9",
@@ -281,7 +303,7 @@ class TestVideoPostprocessBackend:
                     duration_seconds=60.0,
                 )
             return CodecInspectionResult(
-                container="mp4",
+                container="mkv",
                 video_codec="h264",
                 audio_codecs=["aac"],
                 audio_profiles=["lc"],
@@ -289,6 +311,7 @@ class TestVideoPostprocessBackend:
 
         def fake_normalize(source_path: Path, output_path: Path, **kwargs):
             normalization_durations.append(kwargs.get("duration_seconds"))
+            assert output_path == normalized_file
             normalized_file.write_bytes(b"normalized")
             return CodecNormalizationResult(True, normalized_file, None)
 
@@ -302,11 +325,11 @@ class TestVideoPostprocessBackend:
             normalize_video_file_fn=fake_normalize,
         )
 
-        assert inspected_paths == [final_file, normalized_file]
-        assert result.final_path == normalized_file
+        assert inspected_paths == [final_file, final_file]
+        assert result.final_path == final_file
         assert result.normalization_required is True
         assert result.normalization_succeeded is True
-        assert result.codec_summary == "MP4 / H.264 / AAC-LC"
+        assert result.codec_summary == "MKV / H.264 / AAC-LC"
         assert result.warning_message is None
         assert normalization_durations == [60.0]
 
@@ -322,8 +345,9 @@ class TestVideoPostprocessBackend:
         workspace.mkdir()
         final_file = workspace / "final.webm"
         final_file.write_bytes(b"video")
-        normalized_file = workspace / "final.mp4"
+        normalized_file = workspace / "final.normalized.webm"
         calls: list[list[str]] = []
+        probe_count = 0
 
         request = SingleVideoDownloadRequest(
             video_url="https://example.com/watch?v=abc123",
@@ -342,8 +366,26 @@ class TestVideoPostprocessBackend:
 
         def fake_run_command(cmd, runtime_state=None):
             calls.append(cmd)
+            assert cmd[-1] == str(normalized_file)
             normalized_file.write_bytes(b"normalized")
             return 0
+
+        def fake_probe(path: Path):
+            nonlocal probe_count
+            probe_count += 1
+            if probe_count == 1:
+                return CodecInspectionResult(
+                    container="webm",
+                    video_codec="vp9",
+                    audio_codecs=["opus"],
+                    audio_profiles=[None],
+                )
+            return CodecInspectionResult(
+                container="webm",
+                video_codec="h264",
+                audio_codecs=["aac"],
+                audio_profiles=["lc"],
+            )
 
         result = postprocess_video_file(
             request,
@@ -352,17 +394,13 @@ class TestVideoPostprocessBackend:
             run_command_fn=fake_run_command,
             check_required_subtitles_embedded_fn=lambda video_path, langs: True,
             customize_metadata_fn=lambda *args, **kwargs: True,
-            probe_video_codecs_fn=lambda path: CodecInspectionResult(
-                container="webm" if path == final_file else "mp4",
-                video_codec="vp9" if path == final_file else "h264",
-                audio_codecs=["opus"] if path == final_file else ["aac"],
-                audio_profiles=[None] if path == final_file else ["lc"],
-            ),
+            probe_video_codecs_fn=fake_probe,
         )
 
-        assert result.final_path == normalized_file
+        assert result.final_path == final_file
         assert calls
         assert calls[0][0] == "ffmpeg"
+        assert "-movflags" not in calls[0]
 
     def test_postprocess_video_file_returns_original_with_warning_on_normalization_failure(
         self, tmp_path: Path
@@ -418,7 +456,7 @@ class TestVideoPostprocessBackend:
         assert result.codec_summary == "WEBM / VP9 / OPUS"
         assert result.warning_message == "Codec normalization failed"
 
-    def test_postprocess_video_file_removes_obsolete_intermediate_after_success(
+    def test_postprocess_video_file_replaces_canonical_final_after_success(
         self, tmp_path: Path
     ):
         from app.download_runtime_state import MemoryRuntimeState
@@ -431,12 +469,31 @@ class TestVideoPostprocessBackend:
         workspace.mkdir()
         final_file = workspace / "final.mkv"
         final_file.write_bytes(b"video")
-        normalized_file = workspace / "final.mp4"
+        normalized_file = workspace / "final.normalized.mkv"
         removed_paths: list[Path] = []
+        probe_count = 0
 
         def fake_normalize(source_path: Path, output_path: Path, **kwargs):
+            assert output_path == normalized_file
             normalized_file.write_bytes(b"normalized")
             return CodecNormalizationResult(True, normalized_file, None)
+
+        def fake_probe(path: Path):
+            nonlocal probe_count
+            probe_count += 1
+            if probe_count == 1:
+                return CodecInspectionResult(
+                    container="mkv",
+                    video_codec="vp9",
+                    audio_codecs=["opus"],
+                    audio_profiles=[None],
+                )
+            return CodecInspectionResult(
+                container="mkv",
+                video_codec="h264",
+                audio_codecs=["aac"],
+                audio_profiles=["lc"],
+            )
 
         request = SingleVideoDownloadRequest(
             video_url="https://example.com/watch?v=abc123",
@@ -459,15 +516,10 @@ class TestVideoPostprocessBackend:
             final_file,
             check_required_subtitles_embedded_fn=lambda video_path, langs: True,
             customize_metadata_fn=lambda *args, **kwargs: True,
-            probe_video_codecs_fn=lambda path: CodecInspectionResult(
-                container="mkv" if path == final_file else "mp4",
-                video_codec="vp9" if path == final_file else "h264",
-                audio_codecs=["opus"] if path == final_file else ["aac"],
-                audio_profiles=[None] if path == final_file else ["lc"],
-            ),
+            probe_video_codecs_fn=fake_probe,
             normalize_video_file_fn=fake_normalize,
             cleanup_file_fn=lambda path: removed_paths.append(path),
         )
 
-        assert result.final_path == normalized_file
-        assert removed_paths == [final_file]
+        assert result.final_path == final_file
+        assert removed_paths == []

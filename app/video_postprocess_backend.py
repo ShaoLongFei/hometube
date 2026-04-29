@@ -63,10 +63,12 @@ def _resolve_normalization_output_paths(
     video_workspace: Path,
     current_final_path: Path,
 ) -> tuple[Path, Path]:
-    """Return the ffmpeg output path and canonical final MP4 path."""
-    canonical_final_path = tmp_files.get_final_path(video_workspace, "mp4")
+    """Return the ffmpeg output path and canonical final path with the same suffix."""
+    output_ext = current_final_path.suffix.lstrip(".") or "mkv"
+    canonical_final_path = tmp_files.get_final_path(video_workspace, output_ext)
     if current_final_path == canonical_final_path:
-        return video_workspace / "final.normalized.mp4", canonical_final_path
+        normalized_name = f"final.normalized{current_final_path.suffix or '.mkv'}"
+        return video_workspace / normalized_name, canonical_final_path
     return canonical_final_path, canonical_final_path
 
 
@@ -76,9 +78,13 @@ def _resolve_cut_window(
     *,
     runtime_state,
     cookies_resolver: Callable[[str, object], list[str]] | None = None,
-    sponsor_segments_resolver: Callable[[str, list[str], list[str]], list[dict]] | None = None,
+    sponsor_segments_resolver: (
+        Callable[[str, list[str], list[str]], list[dict]] | None
+    ) = None,
     get_keyframes_fn: Callable[[Path], list[float]] = get_keyframes,
-    find_nearest_keyframes_fn: Callable[[list[float], float, float], tuple[float, float]] = find_nearest_keyframes,
+    find_nearest_keyframes_fn: Callable[
+        [list[float], float, float], tuple[float, float]
+    ] = find_nearest_keyframes,
     log_fn: Callable[[str], None] = _noop_log,
 ) -> tuple[float, float]:
     """Resolve final cutting start/duration for one request."""
@@ -133,19 +139,37 @@ def postprocess_video_file(
     progress_fn: Callable[[str], None] = _noop_progress,
     run_command_fn: Callable[..., int] | None = None,
     cookies_resolver: Callable[[str, object], list[str]] | None = None,
-    sponsor_segments_resolver: Callable[[str, list[str], list[str]], list[dict]] | None = None,
-    process_subtitles_fn: Callable[[str, Path, list[str], float, float], list[tuple[str, Path]]] = process_subtitles_for_cutting,
-    build_cut_command_fn: Callable[[Path, float, float, list[tuple[str, Path]], Path, str], list[str]] = build_cut_command,
+    sponsor_segments_resolver: (
+        Callable[[str, list[str], list[str]], list[dict]] | None
+    ) = None,
+    process_subtitles_fn: Callable[
+        [str, Path, list[str], float, float], list[tuple[str, Path]]
+    ] = process_subtitles_for_cutting,
+    build_cut_command_fn: Callable[
+        [Path, float, float, list[tuple[str, Path]], Path, str], list[str]
+    ] = build_cut_command,
     get_keyframes_fn: Callable[[Path], list[float]] = get_keyframes,
-    find_nearest_keyframes_fn: Callable[[list[float], float, float], tuple[float, float]] = find_nearest_keyframes,
-    check_required_subtitles_embedded_fn: Callable[[Path, list[str]], bool] = check_required_subtitles_embedded,
-    find_subtitle_files_fn: Callable[[str, Path, list[str], bool], list[Path]] = find_subtitle_files_optimized,
+    find_nearest_keyframes_fn: Callable[
+        [list[float], float, float], tuple[float, float]
+    ] = find_nearest_keyframes,
+    check_required_subtitles_embedded_fn: Callable[
+        [Path, list[str]], bool
+    ] = check_required_subtitles_embedded,
+    find_subtitle_files_fn: Callable[
+        [str, Path, list[str], bool], list[Path]
+    ] = find_subtitle_files_optimized,
     embed_subtitles_fn: Callable[[Path, list[Path]], bool] = embed_subtitles_manually,
     customize_metadata_fn: Callable[..., bool] = customize_video_metadata,
     probe_video_codecs_fn: Callable[[Path], CodecInspectionResult] = probe_video_codecs,
-    needs_codec_normalization_fn: Callable[[CodecInspectionResult], bool] = needs_codec_normalization,
-    format_codec_summary_fn: Callable[[CodecInspectionResult], str] = format_codec_summary,
-    normalize_video_file_fn: Callable[..., CodecNormalizationResult] = normalize_video_file,
+    needs_codec_normalization_fn: Callable[
+        [CodecInspectionResult], bool
+    ] = needs_codec_normalization,
+    format_codec_summary_fn: Callable[
+        [CodecInspectionResult], str
+    ] = format_codec_summary,
+    normalize_video_file_fn: Callable[
+        ..., CodecNormalizationResult
+    ] = normalize_video_file,
     cleanup_file_fn: Callable[[Path], None] = _cleanup_file,
 ) -> VideoPostprocessResult:
     """Apply cut/subtitle/metadata post-processing to one downloaded file."""
@@ -177,9 +201,7 @@ def postprocess_video_file(
         cut_ext = (
             ".mp4"
             if downloaded_file.suffix == ".mp4"
-            else ".mkv"
-            if downloaded_file.suffix != ".mkv"
-            else ".mkv"
+            else ".mkv" if downloaded_file.suffix != ".mkv" else ".mkv"
         )
         cut_output = tmp_files.get_final_path(
             request.video_workspace,
@@ -250,9 +272,11 @@ def postprocess_video_file(
 
     if normalization_required:
         progress_fn("Normalizing final codecs")
-        normalization_output, canonical_final_path = _resolve_normalization_output_paths(
-            request.video_workspace,
-            final_source,
+        normalization_output, canonical_final_path = (
+            _resolve_normalization_output_paths(
+                request.video_workspace,
+                final_source,
+            )
         )
         normalization = normalize_video_file_fn(
             final_source,
@@ -266,7 +290,10 @@ def postprocess_video_file(
         if normalization.succeeded:
             normalized_final_path = normalization.output_path
             if normalized_final_path != canonical_final_path:
-                if canonical_final_path.exists() and canonical_final_path != final_source:
+                if (
+                    canonical_final_path.exists()
+                    and canonical_final_path != final_source
+                ):
                     cleanup_file_fn(canonical_final_path)
                 normalized_final_path.replace(canonical_final_path)
                 normalized_final_path = canonical_final_path

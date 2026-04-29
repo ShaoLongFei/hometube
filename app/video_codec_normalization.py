@@ -26,8 +26,8 @@ def build_normalization_command(
     video_crf: int = 14,
     video_preset: str = "slower",
 ) -> list[str]:
-    """Build a quality-first ffmpeg command targeting MP4/H.264/AAC-LC."""
-    return [
+    """Build a quality-first ffmpeg command targeting H.264/AAC streams."""
+    cmd = [
         "ffmpeg",
         "-y",
         "-loglevel",
@@ -41,6 +41,8 @@ def build_normalization_command(
         "0:v:0",
         "-map",
         "0:a?",
+        "-map",
+        "0:s?",
         "-c:v",
         "libx264",
         "-preset",
@@ -51,10 +53,13 @@ def build_normalization_command(
         "aac",
         "-profile:a",
         "aac_low",
-        "-movflags",
-        "+faststart",
-        str(output_path),
+        "-c:s",
+        "copy",
     ]
+    if output_path.suffix.lower() in {".mp4", ".m4v", ".mov"}:
+        cmd.extend(["-movflags", "+faststart"])
+    cmd.append(str(output_path))
+    return cmd
 
 
 def normalize_video_file(
@@ -66,7 +71,7 @@ def normalize_video_file(
     subtitle_codec: str = "mov_text",
     duration_seconds: float | None = None,
 ) -> CodecNormalizationResult:
-    """Normalize one file to MP4/H.264/AAC-LC, or return fallback warning."""
+    """Normalize audio/video streams to H.264/AAC-LC, or return fallback warning."""
     cmd = build_normalization_command(
         source_path,
         output_path,

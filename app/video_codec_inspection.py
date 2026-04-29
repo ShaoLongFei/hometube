@@ -93,25 +93,59 @@ def probe_video_codecs(
 
 
 def needs_codec_normalization(result: CodecInspectionResult) -> bool:
-    """Return True unless the file already matches the MP4/H.264/AAC target."""
-    if result.container != "mp4":
-        return True
+    """Return True unless the media streams already match the H.264/AAC target."""
     if result.video_codec != "h264":
         return True
     if not result.audio_codecs:
         return True
-    return any(codec != "aac" for codec in result.audio_codecs)
+    return any(not is_aac_compatible_codec(codec) for codec in result.audio_codecs)
+
+
+def is_aac_compatible_codec(codec: str | None) -> bool:
+    """Return whether a probed audio codec belongs to the AAC compatibility family."""
+    if not codec:
+        return False
+    normalized = codec.strip().lower().replace("_", "-")
+    return (
+        normalized == "aac"
+        or normalized.startswith("aac-")
+        or normalized.startswith("mp4a")
+    )
+
+
+def _is_aac_lc_profile(profile: str | None) -> bool:
+    if not profile:
+        return False
+    normalized = profile.strip().lower().replace("_", "-")
+    return normalized in {"lc", "aac-lc", "aac lc", "low complexity"}
+
+
+def format_audio_summary(
+    audio_codecs: list[str],
+    audio_profiles: list[str | None],
+) -> str:
+    """Format a compact user-visible audio codec summary."""
+    if audio_codecs and all(is_aac_compatible_codec(codec) for codec in audio_codecs):
+        has_profile_data = any(profile for profile in audio_profiles)
+        codec_label = (
+            "AAC-LC"
+            if has_profile_data
+            and all(_is_aac_lc_profile(profile) for profile in audio_profiles)
+            else "AAC"
+        )
+        if len(audio_codecs) == 1:
+            return codec_label
+        return f"{codec_label} x{len(audio_codecs)}"
+    return ", ".join(codec.upper() for codec in audio_codecs) or "unknown"
 
 
 def format_codec_summary(result: CodecInspectionResult) -> str:
     """Format a concise human-readable codec summary."""
     container = result.container.upper() if result.container else "UNKNOWN"
-    video = "H.264" if result.video_codec == "h264" else (result.video_codec or "unknown").upper()
-    if result.audio_codecs and all(codec == "aac" for codec in result.audio_codecs):
-        if len(result.audio_codecs) == 1:
-            audio = "AAC-LC"
-        else:
-            audio = f"AAC-LC x{len(result.audio_codecs)}"
-    else:
-        audio = ", ".join(codec.upper() for codec in result.audio_codecs) or "unknown"
+    video = (
+        "H.264"
+        if result.video_codec == "h264"
+        else (result.video_codec or "unknown").upper()
+    )
+    audio = format_audio_summary(result.audio_codecs, result.audio_profiles)
     return f"{container} / {video} / {audio}"
