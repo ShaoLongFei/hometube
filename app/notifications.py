@@ -249,15 +249,14 @@ def check_cleanup_notification_v260() -> Notification | None:
     except Exception:
         return None
 
+    from app.translations import t
+
     return Notification(
         id=notification_id,
-        title="Clean up recommended",
-        message=(
-            "HomeTube v2.6 introduces a new temporary files organization. "
-            'Consider cleaning up old temporary files, from the HomeTube left sidebar or "Advanced Options" to benefit from the improved structure.'
-        ),
+        title=t("notification_cleanup_title"),
+        message=t("notification_cleanup_message"),
         notification_type=NotificationType.INFO,
-        action_label="Learn more",
+        action_label=t("notification_cleanup_action"),
         action_url=None,  # Will trigger sidebar cleanup
         icon="🧹",
     )
@@ -318,34 +317,30 @@ def render_notifications_streamlit() -> None:
 def _render_single_notification(notif: Notification, dismiss_key: str) -> None:
     """Render a single notification with dismiss button."""
     import streamlit as st
+    from app.translations import t
 
-    # Map notification types to Streamlit components
-    type_map = {
-        NotificationType.INFO: st.info,
-        NotificationType.SUCCESS: st.success,
-        NotificationType.WARNING: st.warning,
-        NotificationType.ERROR: st.error,
-    }
+    with st.container(border=True):
+        message_col, dismiss_col = st.columns(
+            [0.94, 0.06],
+            gap="small",
+            vertical_alignment="top",
+        )
 
-    render_func = type_map.get(notif.notification_type, st.info)
+        with message_col:
+            message_parts = [f"{notif.icon} **{notif.title}**", "", notif.message]
 
-    # Create the notification container
-    col1, col2 = st.columns([20, 1])
+            if notif.action_label and notif.action_url:
+                message_parts.append("")
+                message_parts.append(f"[{notif.action_label}]({notif.action_url})")
 
-    with col1:
-        # Build message with optional action
-        message_parts = [f"{notif.icon} **{notif.title}**", "", notif.message]
+            st.markdown("\n".join(message_parts))
 
-        if notif.action_label and notif.action_url:
-            message_parts.append("")
-            message_parts.append(f"[{notif.action_label}]({notif.action_url})")
-
-        full_message = "\n".join(message_parts)
-        render_func(full_message)
-
-    with col2:
-        # Dismiss button (styled as a small X)
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("✕", key=dismiss_key, help="Dismiss this notification"):
-            st.session_state[dismiss_key] = True
-            st.rerun()
+        with dismiss_col:
+            if st.button(
+                "×",
+                key=dismiss_key,
+                help=t("notification_dismiss"),
+                type="tertiary",
+            ):
+                st.session_state[dismiss_key] = True
+                st.rerun()

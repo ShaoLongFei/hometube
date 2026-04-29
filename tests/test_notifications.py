@@ -1,7 +1,9 @@
 """Tests for the notification engine."""
 
+import inspect
 from unittest.mock import patch
 
+import app.notifications as notifications
 from app.notifications import (
     parse_version,
     is_major_or_minor_update,
@@ -199,6 +201,33 @@ class TestCleanupNotification:
                 assert "2.6" in notif.message
                 assert notif.notification_type == NotificationType.INFO
 
+    def test_cleanup_notification_uses_configured_language(self, tmp_path):
+        """Cleanup notification text should follow the selected UI language."""
+        from app.translations import configure_language
+
+        state_file = tmp_path / "notifications.json"
+        tmp_folder = tmp_path / "tmp"
+        tmp_folder.mkdir()
+        (tmp_folder / "old_video_folder").mkdir()
+
+        with patch(
+            "app.notifications.get_notifications_file_path", return_value=state_file
+        ):
+            with patch(
+                "app.config.ensure_folders_exist",
+                return_value=(tmp_path / "videos", tmp_folder),
+            ):
+                configure_language("zh")
+                try:
+                    notif = check_cleanup_notification_v260()
+                finally:
+                    configure_language("en")
+
+        assert notif is not None
+        assert notif.title == "建议清理"
+        assert "临时文件" in notif.message
+        assert "Clean up recommended" not in notif.title
+
     def test_no_cleanup_notification_when_empty(self, tmp_path):
         """Test no cleanup notification when tmp is empty."""
         state_file = tmp_path / "notifications.json"
@@ -271,3 +300,15 @@ class TestNotificationDataclass:
         assert notif.action_label is None
         assert notif.action_url is None
         assert notif.icon == "ℹ️"
+
+
+class TestNotificationRendering:
+    """Tests for notification rendering layout contracts."""
+
+    def test_dismiss_button_is_rendered_inside_notification_container(self):
+        """Dismiss button should not be detached into a separate right-side column."""
+        source = inspect.getsource(notifications._render_single_notification)
+
+        assert "st.container(border=True)" in source
+        assert "st.columns([20, 1])" not in source
+        assert "notification_dismiss" in source

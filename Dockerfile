@@ -52,7 +52,9 @@ PY
 
 # Prune Python bloat
 find /usr/lib/python3*/site-packages -type d -name "__pycache__" -prune -exec rm -rf {} +
-find /usr/lib/python3*/site-packages -type d -regex '.*\(tests\|testing\|test\)$' -exec rm -rf {} +
+find /usr/lib/python3*/site-packages -type d \
+    -path '*/pandas/_testing' -prune -o \
+    -regex '.*\(tests\|testing\|test\)$' -exec rm -rf {} +
 find /usr/lib/python3*/site-packages -type f -name '*.pyi' -delete
 
 # Drop build deps before committing the layer

@@ -36,6 +36,10 @@ class TestTranslations:
                 "download_button",
                 "video_or_playlist_url",
                 "options",
+                "notification_cleanup_title",
+                "notification_cleanup_message",
+                "notification_cleanup_action",
+                "notification_dismiss",
             ]
 
             for key in essential_keys:
@@ -172,9 +176,9 @@ class TestTranslations:
             ]
 
             for key in keys_expected_in_chinese:
-                assert zh.TRANSLATIONS[key] != en.TRANSLATIONS[key], (
-                    f"Chinese translation for {key} still falls back to English"
-                )
+                assert (
+                    zh.TRANSLATIONS[key] != en.TRANSLATIONS[key]
+                ), f"Chinese translation for {key} still falls back to English"
         except ImportError:
             pytest.skip("Translation modules not available")
 

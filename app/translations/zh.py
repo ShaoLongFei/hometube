@@ -2,7 +2,6 @@
 
 from .en import _HOMETUBE_ICON_SVG, TRANSLATIONS as EN_TRANSLATIONS
 
-
 TRANSLATIONS = {
     **EN_TRANSLATIONS,
     "page_title": "HomeTube",
@@ -207,6 +206,10 @@ TRANSLATIONS = {
     "language_option_en": "English",
     "language_option_zh": "中文",
     "language_option_fr": "Français",
+    "notification_cleanup_title": "建议清理",
+    "notification_cleanup_message": "HomeTube v2.6 引入了新的临时文件组织结构。建议从 HomeTube 左侧边栏或“高级选项”清理旧的临时文件，以使用改进后的结构。",
+    "notification_cleanup_action": "了解更多",
+    "notification_dismiss": "关闭此提示",
     "cookies_extension_intro": "使用 Chromium 配套扩展导出你当前浏览站点的 cookies，然后把导出的 Netscape 文本粘贴到下面。HomeTube 会按主域名自动拆分并保存。",
     "cookies_extension_status_title": "Chromium 扩展状态",
     "cookies_extension_status_checking": "正在检测 HomeTube Cookie Export 扩展…",

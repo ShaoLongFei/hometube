@@ -1060,7 +1060,7 @@ def build_background_job_config_snapshot(
     }
 
 
-@st.fragment(run_every="2s")
+@st.fragment(run_every=2.0)
 def render_background_jobs_panel() -> None:
     """Render a read-only view of persisted background jobs."""
     jobs = list(reversed(background_job_store.list_jobs()))
