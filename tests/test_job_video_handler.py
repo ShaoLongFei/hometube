@@ -2,7 +2,9 @@ from pathlib import Path
 
 
 class TestJobVideoHandler:
-    def test_handle_video_job_item_builds_request_and_runtime_state(self, tmp_path: Path):
+    def test_handle_video_job_item_builds_request_and_runtime_state(
+        self, tmp_path: Path
+    ):
         from app.job_video_handler import handle_video_job_item
 
         job = {
@@ -42,7 +44,9 @@ class TestJobVideoHandler:
         assert request.video_url == item["video_url"]
         assert request.video_workspace == Path(item["workspace_path"])
         assert captured["runtime_state"]["cookies_method"] == "browser"
-        assert captured["runtime_state"]["chosen_format_profiles"] == [{"format_id": "399+251"}]
+        assert captured["runtime_state"]["chosen_format_profiles"] == [
+            {"format_id": "399+251"}
+        ]
 
     def test_handle_video_job_item_raises_on_failed_download(self, tmp_path: Path):
         import pytest
@@ -62,10 +66,16 @@ class TestJobVideoHandler:
             handle_video_job_item(
                 job,
                 item,
-                download_executor=lambda request, runtime_state: (1, None, "download failed"),
+                download_executor=lambda request, runtime_state: (
+                    1,
+                    None,
+                    "download failed",
+                ),
             )
 
-    def test_handle_video_job_item_moves_final_file_to_job_destination(self, tmp_path: Path):
+    def test_handle_video_job_item_moves_final_file_to_job_destination(
+        self, tmp_path: Path
+    ):
         from app.job_video_handler import handle_video_job_item
 
         job = {
@@ -105,6 +115,49 @@ class TestJobVideoHandler:
                 Path(item["workspace_path"]) / "final.mkv",
                 tmp_path / "library" / "Episode 01.mkv",
             )
+        ]
+
+    def test_handle_video_job_item_cleans_workspace_after_success_when_enabled(
+        self, tmp_path: Path
+    ):
+        from app.job_video_handler import handle_video_job_item
+
+        job = {
+            "id": "job-1",
+            "kind": "video",
+            "destination_dir": str(tmp_path / "library"),
+            "config": {
+                "base_output": "Episode 01",
+                "remove_tmp_files_after_download": True,
+            },
+        }
+        item = {
+            "id": "item-1",
+            "video_url": "https://www.youtube.com/watch?v=abc123",
+            "video_id": "abc123",
+            "title": "Episode 01",
+            "workspace_path": str(tmp_path / "video"),
+        }
+        events: list[tuple[str, Path]] = []
+
+        handle_video_job_item(
+            job,
+            item,
+            download_executor=lambda request, runtime_state: (
+                0,
+                Path(item["workspace_path"]) / "final.mkv",
+                None,
+            ),
+            move_to_destination=lambda source, destination: events.append(
+                ("move", destination)
+            )
+            or destination,
+            cleanup_workspace=lambda workspace: events.append(("cleanup", workspace)),
+        )
+
+        assert events == [
+            ("move", tmp_path / "library" / "Episode 01.mkv"),
+            ("cleanup", Path(item["workspace_path"])),
         ]
 
     def test_handle_playlist_job_item_renders_output_name_and_updates_playlist_status(
@@ -164,6 +217,56 @@ class TestJobVideoHandler:
                 Path(item["workspace_path"]) / "final.webm",
                 playlist_dest / "03 - Third Episode.webm",
             )
+        ]
+
+    def test_handle_playlist_job_item_cleans_workspace_after_success_when_enabled(
+        self, tmp_path: Path
+    ):
+        from app.job_video_handler import handle_playlist_job_item
+
+        playlist_workspace = tmp_path / "playlist"
+        playlist_dest = tmp_path / "library" / "My Playlist"
+        job = {
+            "id": "job-1",
+            "kind": "playlist",
+            "destination_dir": str(playlist_dest),
+            "config": {
+                "playlist_workspace": str(playlist_workspace),
+                "playlist_title_pattern": "{idx} - {pretty(title)}.{ext}",
+                "playlist_total_count": 12,
+                "remove_tmp_files_after_download": True,
+            },
+        }
+        item = {
+            "id": "item-1",
+            "item_index": 3,
+            "video_url": "https://www.youtube.com/watch?v=abc123",
+            "video_id": "abc123",
+            "title": "third episode",
+            "workspace_path": str(tmp_path / "video"),
+        }
+        events: list[tuple[str, Path]] = []
+
+        handle_playlist_job_item(
+            job,
+            item,
+            store=None,
+            download_executor=lambda request, runtime_state: (
+                0,
+                Path(item["workspace_path"]) / "final.webm",
+                None,
+            ),
+            update_playlist_status=lambda *args, **kwargs: True,
+            move_to_destination=lambda source, destination: events.append(
+                ("move", destination)
+            )
+            or destination,
+            cleanup_workspace=lambda workspace: events.append(("cleanup", workspace)),
+        )
+
+        assert events == [
+            ("move", playlist_dest / "03 - Third Episode.webm"),
+            ("cleanup", Path(item["workspace_path"])),
         ]
 
     def test_handle_video_job_item_records_normalized_delivery_summary(
@@ -235,7 +338,10 @@ class TestJobVideoHandler:
         self, tmp_path: Path
     ):
         from app.job_store import JobStore
-        from app.job_video_handler import DetachedVideoJobResult, handle_playlist_job_item
+        from app.job_video_handler import (
+            DetachedVideoJobResult,
+            handle_playlist_job_item,
+        )
         from app.video_codec_inspection import CodecInspectionResult
         from app.video_postprocess_backend import VideoPostprocessResult
 

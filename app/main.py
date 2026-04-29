@@ -1046,6 +1046,12 @@ def build_background_job_config_snapshot(
         "cookies_method": st.session_state.get("cookies_method", "none"),
         "browser_select": st.session_state.get("browser_select", settings.BROWSER_SELECT),
         "browser_profile": st.session_state.get("browser_profile", ""),
+        "remove_tmp_files_after_download": bool(
+            st.session_state.get(
+                "remove_tmp_files_after_download",
+                settings.REMOVE_TMP_FILES_AFTER_DOWNLOAD,
+            )
+        ),
         "chosen_profiles": list(st.session_state.get("chosen_format_profiles", [])),
         "download_quality_strategy": st.session_state.get(
             "quality_strategy",

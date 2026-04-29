@@ -5,6 +5,7 @@ Real single-video job handler for detached worker execution.
 from __future__ import annotations
 
 import inspect
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,10 +16,13 @@ from app.download_auth import (
 )
 from app.file_system_utils import move_final_to_destination, sanitize_filename
 from app.job_command_runner import run_monitored_command
-from app.job_download_config import build_runtime_state_from_job, build_single_video_request_from_job
+from app.job_download_config import (
+    build_runtime_state_from_job,
+    build_single_video_request_from_job,
+)
 from app.job_progress import ProgressUpdate
 from app.job_store import JobStore
-from app.logs_utils import log_title, safe_push_log
+from app.logs_utils import safe_push_log
 from app.medias_utils import get_source_from_url
 from app.playlist_utils import update_video_status_in_playlist
 from app.sponsors_utils import get_sponsorblock_segments
@@ -102,11 +106,55 @@ def _coerce_download_result(result) -> DetachedVideoJobResult:
 def _format_audio_summary(postprocess_result: VideoPostprocessResult) -> str:
     """Create a compact audio codec summary for persistent UI display."""
     inspection = postprocess_result.inspection
-    if inspection.audio_codecs and all(codec == "aac" for codec in inspection.audio_codecs):
+    if inspection.audio_codecs and all(
+        codec == "aac" for codec in inspection.audio_codecs
+    ):
         if len(inspection.audio_codecs) == 1:
             return "AAC-LC"
         return f"AAC-LC x{len(inspection.audio_codecs)}"
     return ", ".join(codec.upper() for codec in inspection.audio_codecs) or "unknown"
+
+
+def _bool_config_value(value: object, *, default: bool) -> bool:
+    """Coerce persisted job config values into booleans."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _should_cleanup_delivered_workspace(job: dict) -> bool:
+    """Return whether a successful background item should remove its workspace."""
+    config = job.get("config", {})
+    default = get_settings().REMOVE_TMP_FILES_AFTER_DOWNLOAD
+    return _bool_config_value(
+        config.get("remove_tmp_files_after_download"),
+        default=default,
+    )
+
+
+def _cleanup_delivered_workspace(workspace: Path) -> None:
+    """Remove the per-video workspace after its final file was delivered."""
+    if workspace.exists():
+        shutil.rmtree(workspace)
+
+
+def _cleanup_workspace_after_delivery(
+    job: dict,
+    workspace: Path,
+    cleanup_workspace,
+) -> None:
+    """Best-effort cleanup that never turns a delivered video into a failed item."""
+    if not _should_cleanup_delivered_workspace(job):
+        return
+    try:
+        cleanup_workspace(workspace)
+        safe_push_log(f"🧹 Cleaned delivered video workspace: {workspace}")
+    except Exception as exc:
+        safe_push_log(f"⚠️ Cleanup skipped for delivered workspace {workspace}: {exc}")
 
 
 def _persist_delivery_metadata(
@@ -214,7 +262,9 @@ def execute_single_video_download_for_job(
             ),
             log_fn=safe_push_log,
         )
-        runtime_state["chosen_format_profiles"] = return_result.profiles.chosen_format_profiles
+        runtime_state["chosen_format_profiles"] = (
+            return_result.profiles.chosen_format_profiles
+        )
         if return_result.profiles.download_quality_strategy:
             runtime_state["download_quality_strategy"] = (
                 return_result.profiles.download_quality_strategy
@@ -236,7 +286,9 @@ def execute_single_video_download_for_job(
             sb_choice=req.sb_choice,
             runtime_state=runtime_state,
             cookies_resolver=_cookies_resolver,
-            translations={"error_no_profiles_for_download": "No profiles available for download"},
+            translations={
+                "error_no_profiles_for_download": "No profiles available for download"
+            },
             settings_quality_downgrade=settings.QUALITY_DOWNGRADE,
             youtube_clients=YOUTUBE_CLIENT_FALLBACKS,
             log_fn=callbacks.log,
@@ -303,7 +355,9 @@ def execute_single_video_download_for_job(
             "original_title": url_info.get("title"),
             "uploader": url_info.get("uploader", url_info.get("channel")),
             "source": get_source_from_url(request.video_url),
-            "playlist_id": None if not job else job.get("config", {}).get("playlist_id"),
+            "playlist_id": (
+                None if not job else job.get("config", {}).get("playlist_id")
+            ),
             "webpage_url": request.video_url,
         }
 
@@ -347,6 +401,7 @@ def handle_video_job_item(
         destination,
         safe_push_log,
     ),
+    cleanup_workspace=_cleanup_delivered_workspace,
 ) -> None:
     """Build request/runtime state and execute one detached video job item."""
     request = build_single_video_request_from_job(job, item)
@@ -372,11 +427,16 @@ def handle_video_job_item(
 
     destination_dir = Path(job["destination_dir"])
     destination_dir.mkdir(parents=True, exist_ok=True)
-    destination_path = destination_dir / f"{sanitize_filename(request.base_output)}{final_file.suffix}"
+    destination_path = (
+        destination_dir / f"{sanitize_filename(request.base_output)}{final_file.suffix}"
+    )
     move_to_destination(final_file, destination_path)
+    _cleanup_workspace_after_delivery(job, request.video_workspace, cleanup_workspace)
 
     if store is not None:
-        _persist_delivery_metadata(store, item["id"], download_result.postprocess_result)
+        _persist_delivery_metadata(
+            store, item["id"], download_result.postprocess_result
+        )
         store.update_job_item_progress(
             item["id"],
             progress_percent=100.0,
@@ -397,6 +457,7 @@ def handle_playlist_job_item(
         destination,
         safe_push_log,
     ),
+    cleanup_workspace=_cleanup_delivered_workspace,
 ) -> None:
     """Execute one playlist video item and place it into the playlist folder."""
     config = job.get("config", {})
@@ -429,13 +490,18 @@ def handle_playlist_job_item(
             title=item.get("title") or request.video_title,
             video_id=item.get("video_id") or request.video_id,
             ext=final_file.suffix.lstrip("."),
-            total=int(config.get("playlist_total_count") or job.get("total_items") or 1),
+            total=int(
+                config.get("playlist_total_count") or job.get("total_items") or 1
+            ),
             channel=config.get("playlist_channel"),
         )
         destination_dir = Path(job["destination_dir"])
         destination_dir.mkdir(parents=True, exist_ok=True)
         destination_path = destination_dir / resolved_title
         move_to_destination(final_file, destination_path)
+        _cleanup_workspace_after_delivery(
+            job, request.video_workspace, cleanup_workspace
+        )
 
         update_playlist_status(
             playlist_workspace,
@@ -448,7 +514,9 @@ def handle_playlist_job_item(
             },
         )
         if store is not None:
-            _persist_delivery_metadata(store, item["id"], download_result.postprocess_result)
+            _persist_delivery_metadata(
+                store, item["id"], download_result.postprocess_result
+            )
             store.update_job_item_progress(
                 item["id"],
                 progress_percent=100.0,
