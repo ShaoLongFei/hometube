@@ -18,6 +18,7 @@ from app.playlist_utils import (
     get_playlist_progress,
     mark_video_as_skipped,
 )
+from app.text_utils import DEFAULT_PLAYLIST_TITLE_PATTERN, render_title
 
 
 class TestPlaylistUrlDetection:
@@ -237,6 +238,68 @@ class TestExistingVideosCheck:
         assert total == 2
         assert [entry["id"] for entry in already] == ["vid2"]
         assert [entry["id"] for entry in to_download] == ["vid1"]
+
+    def test_check_existing_tolerates_playlist_index_width_changes(self, tmp_path):
+        """Retry jobs may deliver 2-digit names while full expanded jobs use 3 digits."""
+        dest = tmp_path / "videos"
+        dest.mkdir()
+
+        (dest / "01 - Part Title.mkv").touch()
+        entries = [{"id": "part1", "title": "Part Title", "playlist_index": 1}]
+        entries.extend(
+            {"id": f"part{i}", "title": f"Other Part {i}", "playlist_index": i}
+            for i in range(2, 123)
+        )
+
+        already, to_download, total = check_existing_videos_in_destination(
+            dest,
+            entries,
+            title_pattern=DEFAULT_PLAYLIST_TITLE_PATTERN,
+        )
+
+        assert total == 122
+        assert [entry["id"] for entry in already] == ["part1"]
+        assert "part1" not in {entry["id"] for entry in to_download}
+
+    def test_check_existing_matches_clamped_multibyte_retry_filename(self, tmp_path):
+        """Long Bilibili titles may have been delivered by a smaller retry job."""
+        dest = tmp_path / "videos"
+        dest.mkdir()
+        long_title = (
+            "【全网最顶级】『时长7小时17分』开车听歌音悦盛典-精选歌单-"
+            "超清混剪-完美音质-动态歌词-收藏级 "
+        ) * 4
+
+        retry_filename = render_title(
+            DEFAULT_PLAYLIST_TITLE_PATTERN,
+            i=1,
+            title=long_title,
+            video_id="BV1aW9EYmEgT_p1",
+            ext="mkv",
+            total=76,
+        )
+        (dest / retry_filename).touch()
+        entries = [
+            {
+                "id": "BV1aW9EYmEgT_p1",
+                "title": long_title,
+                "playlist_index": 1,
+            }
+        ]
+        entries.extend(
+            {"id": f"part{i}", "title": f"Other Part {i}", "playlist_index": i}
+            for i in range(2, 123)
+        )
+
+        already, to_download, total = check_existing_videos_in_destination(
+            dest,
+            entries,
+            title_pattern=DEFAULT_PLAYLIST_TITLE_PATTERN,
+        )
+
+        assert total == 122
+        assert [entry["id"] for entry in already] == ["BV1aW9EYmEgT_p1"]
+        assert "BV1aW9EYmEgT_p1" not in {entry["id"] for entry in to_download}
 
 
 class TestDownloadRatio:

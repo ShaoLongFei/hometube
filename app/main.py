@@ -3924,6 +3924,23 @@ if submitted:
                 )
                 playlist_dest = dest_dir / sanitize_filename(playlist_name)
                 ensure_dir(playlist_dest)
+                title_pattern = st.session_state.get(
+                    "playlist_title_pattern",
+                    DEFAULT_PLAYLIST_TITLE_PATTERN,
+                )
+                expanded_already_downloaded, playlist_to_download, _ = (
+                    check_existing_videos_in_destination(
+                        playlist_dest,
+                        playlist_to_download,
+                        playlist_workspace=playlist_workspace,
+                        title_pattern=title_pattern,
+                    )
+                )
+
+                if not playlist_to_download:
+                    st.success(t("playlist_all_downloaded"))
+                    st.session_state.download_finished = True
+                    st.stop()
 
                 url_info = st.session_state.get("url_info", {})
                 url_info_path = st.session_state.get("url_info_path")
@@ -3958,10 +3975,6 @@ if submitted:
                             }
                     save_playlist_status(playlist_workspace, existing_status)
 
-                title_pattern = st.session_state.get(
-                    "playlist_title_pattern",
-                    DEFAULT_PLAYLIST_TITLE_PATTERN,
-                )
                 add_playlist_download_attempt(
                     playlist_workspace=playlist_workspace,
                     custom_title=playlist_name,
@@ -3973,6 +3986,10 @@ if submitted:
                     "playlist_already_downloaded",
                     [],
                 )
+                playlist_already_downloaded = [
+                    *playlist_already_downloaded,
+                    *expanded_already_downloaded,
+                ]
                 for entry in playlist_already_downloaded:
                     video_id = entry.get("id", "")
                     if video_id:
@@ -4119,6 +4136,22 @@ if submitted:
             playlist_dest = dest_dir / sanitize_filename(playlist_name)
             ensure_dir(playlist_dest)
             push_log(f"📁 Playlist destination: {playlist_dest}")
+            title_pattern = st.session_state.get(
+                "playlist_title_pattern", DEFAULT_PLAYLIST_TITLE_PATTERN
+            )
+            expanded_already_downloaded, playlist_to_download, _ = (
+                check_existing_videos_in_destination(
+                    playlist_dest,
+                    playlist_to_download,
+                    playlist_workspace=playlist_workspace,
+                    title_pattern=title_pattern,
+                )
+            )
+
+            if not playlist_to_download:
+                st.success(t("playlist_all_downloaded"))
+                st.session_state.download_finished = True
+                st.stop()
 
             # Ensure url_info.json exists in playlist workspace
             url_info = st.session_state.get("url_info", {})
@@ -4169,9 +4202,6 @@ if submitted:
 
             # Record download attempt
             # Get title_pattern from session state (set in UI)
-            title_pattern = st.session_state.get(
-                "playlist_title_pattern", DEFAULT_PLAYLIST_TITLE_PATTERN
-            )
             add_playlist_download_attempt(
                 playlist_workspace=playlist_workspace,
                 custom_title=playlist_name,
@@ -4183,6 +4213,10 @@ if submitted:
             playlist_already_downloaded = st.session_state.get(
                 "playlist_already_downloaded", []
             )
+            playlist_already_downloaded = [
+                *playlist_already_downloaded,
+                *expanded_already_downloaded,
+            ]
             for entry in playlist_already_downloaded:
                 video_id = entry.get("id", "")
                 if video_id:

@@ -198,12 +198,19 @@ def check_existing_videos_in_destination(
 
     # Normalize filenames for comparison (legacy method)
     existing_names = set()
+    existing_title_names = set()
     existing_video_ids = set()
     for filename in existing_files_set:
         # Store normalized name (without extension)
         name_without_ext = Path(filename).stem
         normalized = _normalize_for_comparison(name_without_ext)
         existing_names.add(normalized)
+        title_like_name = _normalize_for_comparison(
+            _strip_leading_playlist_index(name_without_ext)
+        )
+        if title_like_name:
+            existing_title_names.add(title_like_name)
+
         # Also check if any video ID is in the filename
         for entry in playlist_entries:
             video_id = entry.get("id", "")
@@ -259,7 +266,10 @@ def check_existing_videos_in_destination(
         # Priority 3: Check normalized title in filesystem
         if not found and video_title:
             normalized_title = _normalize_for_comparison(video_title)
-            if normalized_title in existing_names:
+            if normalized_title in existing_names or _matches_existing_title_name(
+                normalized_title,
+                existing_title_names,
+            ):
                 found = True
 
         # Priority 4: Check video ID in existing filenames
@@ -301,6 +311,33 @@ def _normalize_for_comparison(name: str) -> str:
     normalized = re.sub(r"\s+", " ", normalized).strip()
 
     return normalized
+
+
+def _strip_leading_playlist_index(name: str) -> str:
+    """Remove a rendered playlist index prefix such as '01 - ' or '001_'."""
+    if not name:
+        return ""
+    return re.sub(r"^\s*\d{1,6}\s*[-_. ]+\s*", "", name).strip()
+
+
+def _matches_existing_title_name(
+    normalized_title: str,
+    existing_title_names: set[str],
+) -> bool:
+    """Match exact titles and safely truncated long filenames."""
+    if not normalized_title:
+        return False
+    if normalized_title in existing_title_names:
+        return True
+
+    min_prefix_chars = 24
+    for existing_title in existing_title_names:
+        if len(existing_title) >= min_prefix_chars and normalized_title.startswith(
+            existing_title
+        ):
+            return True
+
+    return False
 
 
 def get_download_ratio(
