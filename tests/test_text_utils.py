@@ -404,6 +404,26 @@ class TestRenderTitle:
         )
         assert result == "123 - Test.mkv"
 
+    def test_render_title_clamps_utf8_filename_bytes_and_preserves_extension(self):
+        """Long multibyte titles should not exceed filesystem filename limits."""
+        long_title = (
+            "【全网最顶级】『时长7小时17分』开车听歌音悦盛典-精选歌单-"
+            "超清混剪-完美音质-动态歌词-收藏级 "
+        ) * 4
+
+        result = render_title(
+            DEFAULT_PLAYLIST_TITLE_PATTERN,
+            i=1,
+            title=long_title,
+            video_id="BV1aW9EYmEgT_p1",
+            ext="mkv",
+            total=76,
+        )
+
+        assert result.startswith("01 - ")
+        assert result.endswith(".mkv")
+        assert len(result.encode("utf-8")) <= 240
+
 
 class TestDefaultPattern:
     """Tests for the default pattern constant."""

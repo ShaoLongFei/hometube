@@ -22,6 +22,7 @@ _RESERVED = {
 _INVALID_CHARS_RE = re.compile(r'[\\/:*?"<>|]+')
 _WHITESPACE_RE = re.compile(r"\s+")
 _TRAILING_DOTS_SPACES_RE = re.compile(r"[\. ]+$")
+_MAX_FILENAME_BYTES = 240
 
 
 def _sanitize_common(text: str) -> str:
@@ -51,6 +52,38 @@ def _avoid_reserved_windows_name(s: str) -> str:
     if s.upper() in _RESERVED:
         return f"_{s}"
     return s
+
+
+def _truncate_utf8_bytes(text: str, max_bytes: int) -> str:
+    """Truncate text to a UTF-8 byte budget without splitting characters."""
+    if max_bytes <= 0:
+        return ""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _clamp_filename_bytes(filename: str, max_bytes: int = _MAX_FILENAME_BYTES) -> str:
+    """Clamp a rendered filename to filesystem-safe UTF-8 bytes, preserving suffix."""
+    if len(filename.encode("utf-8")) <= max_bytes:
+        return filename
+
+    dot_index = filename.rfind(".")
+    has_suffix = 0 < dot_index < len(filename) - 1
+    if has_suffix:
+        stem = filename[:dot_index]
+        suffix = filename[dot_index:]
+        suffix_bytes = len(suffix.encode("utf-8"))
+        if suffix_bytes < max_bytes:
+            truncated_stem = _truncate_utf8_bytes(
+                stem, max_bytes - suffix_bytes
+            ).rstrip(" .")
+            if not truncated_stem:
+                truncated_stem = "untitled"
+            return f"{truncated_stem}{suffix}"
+
+    return _truncate_utf8_bytes(filename, max_bytes).rstrip(" .") or "untitled"
 
 
 def slug(text: str, max_length: int = 120) -> str:
@@ -267,14 +300,14 @@ def render_title(
             channel=safe_channel,
         )
 
-        return result
+        return _clamp_filename_bytes(result)
 
     except (KeyError, ValueError, IndexError):
         # Pattern is malformed, use safe fallback
         # Fallback pattern: "{idx} - {pretty(title)}.{ext}"
         prettified_title = pretty(safe_title)
         idx_str = idx(safe_i, safe_total)
-        return f"{idx_str} - {prettified_title}.{safe_ext}"
+        return _clamp_filename_bytes(f"{idx_str} - {prettified_title}.{safe_ext}")
 
 
 # Default pattern for playlist video titles
