@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import sqlite3
@@ -430,15 +431,40 @@ def is_compliant(summary: ProbeSummary) -> bool:
 
 
 def plan_temp_output(source: Path) -> Path:
+    source_hash = hashlib.sha1(str(source).encode("utf-8")).hexdigest()[:16]
     suffix = uuid.uuid4().hex[:10]
     return source.with_name(
-        f".{source.name}.hometube-reencode.{suffix}.tmp{source.suffix}"
+        f".hometube-reencode-{source_hash}-{suffix}.tmp{source.suffix}"
     )
 
 
+def cleanup_library_temp_outputs(root: Path) -> int:
+    removed = 0
+    for candidate in root.rglob("*"):
+        if not candidate.is_file():
+            continue
+        if ".hometube-reencode" not in candidate.name:
+            continue
+        candidate.unlink()
+        removed += 1
+    return removed
+
+
 def cleanup_stale_outputs(source: Path) -> None:
-    pattern = f".{source.name}.hometube-reencode.*.tmp{source.suffix}"
-    for candidate in source.parent.glob(pattern):
+    source_hash = hashlib.sha1(str(source).encode("utf-8")).hexdigest()[:16]
+    patterns = [
+        f".hometube-reencode-{source_hash}-*.tmp{source.suffix}",
+        f".{source.name}.hometube-reencode.*.tmp{source.suffix}",
+    ]
+    for pattern in patterns:
+        for candidate in source.parent.glob(pattern):
+            if candidate.is_file():
+                candidate.unlink()
+    for candidate in source.parent.iterdir():
+        if ".hometube-reencode." not in candidate.name:
+            continue
+        if source.name not in candidate.name:
+            continue
         if candidate.is_file():
             candidate.unlink()
 
@@ -938,6 +964,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         files = discover_video_files(args.root)
+        if not args.dry_run:
+            removed_temp_count = cleanup_library_temp_outputs(args.root)
+            if removed_temp_count:
+                log(
+                    f"Removed {removed_temp_count} stale reencode temp files under {args.root}",
+                    log_file=args.log_file,
+                )
         for path in files:
             stat = path.stat()
             state.mark_scanned(path, stat.st_size, stat.st_mtime_ns)
