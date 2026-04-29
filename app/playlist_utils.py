@@ -26,6 +26,12 @@ from app.workspace import (
     get_video_workspace,
 )
 
+_PLAYLIST_INDEX_PREFIX_RE = re.compile(r"^\s*(?P<index>\d{1,6})\s*[-_. ]+\s*")
+_MULTIPART_MARKER_RE = re.compile(
+    r"(?<![A-Za-z0-9])P\s*0*(?P<part>\d{1,4})(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+
 # === PLAYLIST DETECTION ===
 
 
@@ -199,6 +205,7 @@ def check_existing_videos_in_destination(
     # Normalize filenames for comparison (legacy method)
     existing_names = set()
     existing_title_names = set()
+    existing_indexed_multipart_parts = set()
     existing_video_ids = set()
     for filename in existing_files_set:
         # Store normalized name (without extension)
@@ -210,6 +217,11 @@ def check_existing_videos_in_destination(
         )
         if title_like_name:
             existing_title_names.add(title_like_name)
+
+        leading_index = _extract_leading_playlist_index(name_without_ext)
+        if leading_index is not None:
+            for part_number in _extract_multipart_part_markers(name_without_ext):
+                existing_indexed_multipart_parts.add((leading_index, part_number))
 
         # Also check if any video ID is in the filename
         for entry in playlist_entries:
@@ -272,7 +284,20 @@ def check_existing_videos_in_destination(
             ):
                 found = True
 
-        # Priority 4: Check video ID in existing filenames
+        # Priority 4: For expanded Bilibili parts with fallback titles, match
+        # the delivered retry filename by its queue index and Pxx marker.
+        multipart_index = _coerce_positive_int(entry.get("multipart_index"))
+        playlist_index_int = _coerce_positive_int(playlist_index)
+        if (
+            not found
+            and multipart_index is not None
+            and playlist_index_int is not None
+            and (playlist_index_int, multipart_index)
+            in existing_indexed_multipart_parts
+        ):
+            found = True
+
+        # Priority 5: Check video ID in existing filenames
         if not found and video_id and video_id in existing_video_ids:
             found = True
 
@@ -317,7 +342,40 @@ def _strip_leading_playlist_index(name: str) -> str:
     """Remove a rendered playlist index prefix such as '01 - ' or '001_'."""
     if not name:
         return ""
-    return re.sub(r"^\s*\d{1,6}\s*[-_. ]+\s*", "", name).strip()
+    return _PLAYLIST_INDEX_PREFIX_RE.sub("", name).strip()
+
+
+def _extract_leading_playlist_index(name: str) -> int | None:
+    """Extract a rendered leading playlist index from a filename stem."""
+    if not name:
+        return None
+    match = _PLAYLIST_INDEX_PREFIX_RE.match(name)
+    if not match:
+        return None
+    return _coerce_positive_int(match.group("index"))
+
+
+def _extract_multipart_part_markers(name: str) -> set[int]:
+    """Extract Bilibili-style Pxx markers from a filename stem."""
+    if not name:
+        return set()
+    return {
+        part
+        for part in (
+            _coerce_positive_int(match.group("part"))
+            for match in _MULTIPART_MARKER_RE.finditer(name)
+        )
+        if part is not None
+    }
+
+
+def _coerce_positive_int(value) -> int | None:
+    """Convert a value to a positive integer if possible."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _matches_existing_title_name(

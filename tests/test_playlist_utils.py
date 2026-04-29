@@ -301,6 +301,41 @@ class TestExistingVideosCheck:
         assert [entry["id"] for entry in already] == ["BV1aW9EYmEgT_p1"]
         assert "BV1aW9EYmEgT_p1" not in {entry["id"] for entry in to_download}
 
+    def test_check_existing_matches_multipart_fallback_by_index_and_part_marker(
+        self, tmp_path
+    ):
+        """Flat Bilibili probes may only know BV fallback titles before download."""
+        dest = tmp_path / "videos"
+        dest.mkdir()
+
+        (dest / "03 - Video 3.mkv").touch()
+        (dest / "03 - Real Parent Title P01 Real Part Title.mkv").touch()
+        (dest / "04 - Video 4.mkv").touch()
+        entries = [
+            {
+                "id": "BV1KXzmYnELf_p1",
+                "title": "BV1KXzmYnELf P01",
+                "playlist_index": 3,
+                "multipart_index": 1,
+            },
+            {
+                "id": "BV1KXzmYnELf_p2",
+                "title": "BV1KXzmYnELf P02",
+                "playlist_index": 4,
+                "multipart_index": 2,
+            },
+        ]
+
+        already, to_download, total = check_existing_videos_in_destination(
+            dest,
+            entries,
+            title_pattern=DEFAULT_PLAYLIST_TITLE_PATTERN,
+        )
+
+        assert total == 2
+        assert [entry["id"] for entry in already] == ["BV1KXzmYnELf_p1"]
+        assert [entry["id"] for entry in to_download] == ["BV1KXzmYnELf_p2"]
+
 
 class TestDownloadRatio:
     """Test download ratio calculations"""
