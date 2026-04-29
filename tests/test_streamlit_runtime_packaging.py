@@ -39,6 +39,21 @@ def test_background_jobs_fragment_uses_numeric_rerun_interval() -> None:
     raise AssertionError("render_background_jobs_panel was not found")
 
 
+def test_background_jobs_panel_uses_active_progress_translation() -> None:
+    """The panel should label in-flight work, not only completed item counts."""
+    source = (PROJECT_ROOT / "app" / "main.py").read_text()
+
+    assert "background_jobs_progress_active" in source
+
+
+def test_main_no_longer_contains_unreachable_foreground_download_fallback() -> None:
+    """Submitted downloads should go through the persistent background queue only."""
+    source = (PROJECT_ROOT / "app" / "main.py").read_text()
+
+    assert "=== PLAYLIST DOWNLOAD MODE ===" not in source
+    assert "=== SINGLE VIDEO DOWNLOAD MODE (existing logic continues below) ===" not in source
+
+
 def test_dockerfile_pruning_preserves_pandas_runtime_testing_package() -> None:
     dockerfile = (PROJECT_ROOT / "Dockerfile").read_text()
 

@@ -88,3 +88,28 @@ def test_state_db_resets_interrupted_running_rows(tmp_path):
         None,
         "Reset stale running state from a previous interrupted run",
     )
+
+
+def test_main_returns_nonzero_when_any_file_fails(tmp_path, monkeypatch):
+    video_path = tmp_path / "bad.mkv"
+    video_path.write_bytes(b"not really video")
+
+    monkeypatch.setattr(reencode, "ensure_binary", lambda _name: None)
+    monkeypatch.setattr(reencode, "discover_video_files", lambda _root: [video_path])
+    monkeypatch.setattr(reencode, "cleanup_library_temp_outputs", lambda _root: 0)
+    monkeypatch.setattr(reencode, "process_file", lambda **_kwargs: "failed")
+
+    result = reencode.main(
+        [
+            "--root",
+            str(tmp_path),
+            "--state",
+            str(tmp_path / "state.sqlite3"),
+            "--log-file",
+            str(tmp_path / "reencode.log"),
+            "--jobs",
+            "1",
+        ]
+    )
+
+    assert result == 1

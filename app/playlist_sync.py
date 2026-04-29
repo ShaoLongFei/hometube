@@ -21,9 +21,30 @@ from app.file_system_utils import sanitize_filename, ensure_dir
 from app.logs_utils import safe_push_log
 from app.text_utils import render_title
 from app.tmp_files import find_downloaded_video, VIDEO_EXTENSIONS
-from app.workspace import get_video_workspace
+from app.workspace import get_video_workspace, parse_url
 
 # === HELPER FUNCTIONS ===
+
+
+def infer_playlist_platform(playlist_workspace: Path, url_info: dict | None = None) -> str:
+    """Infer the platform key for a canonical playlist workspace."""
+    parts = playlist_workspace.parts
+    if len(parts) >= 3 and parts[-3] == "playlists" and parts[-2]:
+        return parts[-2]
+
+    for key in ("webpage_url", "original_url", "url"):
+        raw_url = (url_info or {}).get(key)
+        if not raw_url:
+            continue
+        parsed = parse_url(raw_url)
+        if parsed.platform and parsed.platform != "unknown":
+            return parsed.platform
+
+    extractor = str((url_info or {}).get("extractor") or "").strip().lower()
+    if extractor:
+        return extractor.split(":", 1)[0]
+
+    return "youtube"
 
 
 def render_video_filename(
@@ -738,10 +759,11 @@ def sync_playlist(
     # Videos may exist in tmp/videos/{platform}/{video_id}/
     # These should NOT be re-downloaded, they just need to be MOVED to destination
     videos_still_to_download = []
+    playlist_platform = infer_playlist_platform(playlist_workspace, new_url_info)
 
     for action in plan.videos_to_download:
         video_workspace = get_video_workspace(
-            settings.TMP_DOWNLOAD_FOLDER, "youtube", action.video_id
+            settings.TMP_DOWNLOAD_FOLDER, playlist_platform, action.video_id
         )
         if video_workspace.exists():
             downloaded_file = find_downloaded_video(video_workspace)

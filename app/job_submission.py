@@ -10,6 +10,7 @@ from app.playlist_entry_expansion import (
     EntryInfoResolver,
     expand_playlist_entries,
 )
+from app.playlist_entry_target import resolve_playlist_entry_target
 from app.workspace import ensure_video_workspace, parse_url
 
 
@@ -83,21 +84,17 @@ def enqueue_playlist_job(
     )
     items = []
     for idx, entry in enumerate(playlist_entries, 1):
-        video_id = entry.get("id", "")
-        video_url = entry.get("url") or (
-            f"https://www.youtube.com/watch?v={video_id}" if video_id else url
-        )
-        parsed = parse_url(video_url)
+        target = resolve_playlist_entry_target(entry, url)
         workspace = ensure_video_workspace(
             tmp_download_folder,
-            parsed.platform,
-            video_id or parsed.id,
+            target.platform,
+            target.workspace_id,
         )
         items.append(
             {
                 "item_index": entry.get("playlist_index", idx),
-                "video_id": video_id or parsed.id,
-                "video_url": video_url,
+                "video_id": target.video_id,
+                "video_url": target.video_url,
                 "title": entry.get("title", f"Video {idx}"),
                 "workspace_path": str(workspace),
                 "resolved_output_name": None,

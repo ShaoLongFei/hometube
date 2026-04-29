@@ -256,6 +256,7 @@ Mets à jour le fichier de cookies où essaye l'option **cookies dans navigateur
     "background_jobs_status": "Statut",
     "background_jobs_destination": "Destination",
     "background_jobs_progress": "{completed}/{total} élément(s) terminés",
+    "background_jobs_progress_active": "{completed}/{total} élément(s) terminés, {running} en cours",
     "background_jobs_temporarily_busy": "La base des tâches en arrière-plan est occupée. Nouvelle tentative sous peu...",
     "background_job_queued_single": "Téléchargement en arrière-plan ajouté : {title}",
     "background_job_queued_playlist": "Playlist ajoutée en arrière-plan : {title} ({count} vidéo(s))",

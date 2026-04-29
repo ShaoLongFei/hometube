@@ -72,7 +72,7 @@ def build_test_command():
     )
 
     # Add cookies
-    base_cmd.extend(["--cookies", "/Users/yo/Dev/hometube/cookies/youtube_cookies.txt"])
+    base_cmd.extend(["--cookies", "cookies/youtube_cookies.txt"])
 
     # Add URL
     base_cmd.append("https://www.youtube.com/watch?v=ErdDYvfbtp0")

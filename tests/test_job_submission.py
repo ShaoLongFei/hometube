@@ -125,6 +125,37 @@ class TestJobSubmission:
         assert items[0]["workspace_path"].endswith("videos/bilibili/BV1abc_p1")
         assert items[1]["workspace_path"].endswith("videos/bilibili/BV1abc_p2")
 
+    def test_enqueue_playlist_job_does_not_invent_youtube_url_for_non_youtube_entry(
+        self, tmp_path: Path
+    ):
+        from app.job_store import JobStore
+        from app.job_submission import enqueue_playlist_job
+
+        store = JobStore(tmp_path / "jobs.db")
+
+        job_id = enqueue_playlist_job(
+            store,
+            url="https://space.bilibili.com/1/lists?sid=6656145",
+            playlist_id="6656145",
+            playlist_title="Bili Mix",
+            site="space.bilibili.com",
+            destination_dir=tmp_path / "library",
+            tmp_download_folder=tmp_path / "tmp",
+            playlist_entries=[
+                {
+                    "id": "BV1abc",
+                    "title": "Parent Video",
+                    "playlist_index": 1,
+                }
+            ],
+            config={"playlist_title_pattern": "{idx} - {title}"},
+        )
+
+        item = store.get_job_items(job_id)[0]
+
+        assert item["video_url"] == "https://space.bilibili.com/1/lists?sid=6656145"
+        assert item["workspace_path"].endswith("videos/bilibili/BV1abc")
+
     def test_default_jobs_db_path_lives_under_tmp_jobs(self, tmp_path: Path):
         from app.job_submission import get_jobs_db_path
 

@@ -258,6 +258,7 @@ Update your file cookies or try using **browser cookies** instead of file cookie
     "background_jobs_status": "Status",
     "background_jobs_destination": "Destination",
     "background_jobs_progress": "{completed}/{total} item(s) completed",
+    "background_jobs_progress_active": "{completed}/{total} item(s) completed, {running} running",
     "background_jobs_temporarily_busy": "Background job database is busy. Retrying shortly...",
     "background_job_queued_single": "Queued background download: {title}",
     "background_job_queued_playlist": "Queued playlist background job: {title} ({count} video(s))",

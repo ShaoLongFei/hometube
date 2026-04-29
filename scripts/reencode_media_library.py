@@ -1131,7 +1131,7 @@ def main(argv: list[str] | None = None) -> int:
             f"skipped={stats.skipped} failed={stats.failed}",
             log_file=args.log_file,
         )
-        return 0
+        return 1 if stats.failed else 0
     finally:
         state.close()
 

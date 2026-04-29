@@ -190,6 +190,7 @@ class TestTranslations:
             from app.translations import en, fr, zh
 
             keys = [
+                "background_jobs_progress_active",
                 "background_jobs_delivery_ready",
                 "background_jobs_delivery_normalized",
                 "background_jobs_delivery_original_warning",
