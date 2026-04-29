@@ -78,6 +78,7 @@ class StateDB:
                 audio_codecs text,
                 attempts integer not null default 0,
                 progress_percent real not null default 0,
+                output_bytes integer not null default 0,
                 speed text,
                 phase text,
                 duration_seconds real,
@@ -97,11 +98,42 @@ class StateDB:
                 created_at text not null
             )
             """)
+        self._ensure_files_column("output_bytes", "integer not null default 0")
         self._conn.commit()
+
+    def _ensure_files_column(self, name: str, definition: str) -> None:
+        columns = {
+            row[1] for row in self._conn.execute("pragma table_info(files)").fetchall()
+        }
+        if name not in columns:
+            self._conn.execute(f"alter table files add column {name} {definition}")
 
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    def reset_interrupted_runs(self) -> int:
+        now = utc_now()
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                update files set
+                    status='planned',
+                    progress_percent=0,
+                    output_bytes=0,
+                    speed=null,
+                    phase='interrupted',
+                    output_path=null,
+                    error='Reset stale running state from a previous interrupted run',
+                    started_at=null,
+                    finished_at=null,
+                    updated_at=?
+                where status='running'
+                """,
+                (now,),
+            )
+            self._conn.commit()
+            return cursor.rowcount
 
     def mark_scanned(self, path: Path, size: int, mtime_ns: int) -> None:
         now = utc_now()
@@ -129,6 +161,7 @@ class StateDB:
         output_path: Path | None = None,
         error: str | None = None,
         progress_percent: float | None = None,
+        output_bytes: int | None = None,
         speed: str | None = None,
         increment_attempts: bool = False,
         finished: bool = False,
@@ -145,11 +178,11 @@ class StateDB:
                 """
                 insert into files(
                     path, status, container, video_codec, audio_codecs,
-                    attempts, progress_percent, speed, phase, duration_seconds,
+                    attempts, progress_percent, output_bytes, speed, phase, duration_seconds,
                     output_path, error, started_at, finished_at, updated_at
                 )
                 values(
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 on conflict(path) do update set
                     status=excluded.status,
@@ -158,6 +191,7 @@ class StateDB:
                     audio_codecs=coalesce(excluded.audio_codecs, files.audio_codecs),
                     attempts=files.attempts + ?,
                     progress_percent=coalesce(excluded.progress_percent, files.progress_percent),
+                    output_bytes=coalesce(excluded.output_bytes, files.output_bytes),
                     speed=coalesce(excluded.speed, files.speed),
                     phase=coalesce(excluded.phase, files.phase),
                     duration_seconds=coalesce(excluded.duration_seconds, files.duration_seconds),
@@ -175,6 +209,7 @@ class StateDB:
                     audio_codecs,
                     1 if increment_attempts else 0,
                     progress_percent if progress_percent is not None else 0,
+                    output_bytes if output_bytes is not None else 0,
                     speed,
                     phase,
                     summary.duration_seconds if summary else None,
@@ -196,6 +231,7 @@ class StateDB:
         speed: str,
         phase: str,
         output_path: Path,
+        output_bytes: int,
     ) -> None:
         now = utc_now()
         with self._lock:
@@ -204,13 +240,14 @@ class StateDB:
                 update files set
                     status='running',
                     progress_percent=?,
+                    output_bytes=?,
                     speed=?,
                     phase=?,
                     output_path=?,
                     updated_at=?
                 where path=?
                 """,
-                (percent, speed, phase, str(output_path), now, str(path)),
+                (percent, output_bytes, speed, phase, str(output_path), now, str(path)),
             )
             self._conn.commit()
 
@@ -641,6 +678,32 @@ def remove_partial_output(output_path: Path, source: Path) -> None:
         output_path.unlink()
 
 
+def estimate_progress_percent(
+    *,
+    duration_seconds: float | None,
+    last_out_time_us: int,
+    source_size: int,
+    output_path: Path,
+    is_final_update: bool = False,
+) -> tuple[float, int]:
+    try:
+        output_bytes = output_path.stat().st_size
+    except OSError:
+        output_bytes = 0
+
+    if is_final_update:
+        return 100.0, output_bytes
+
+    percent = 0.0
+    if duration_seconds and last_out_time_us:
+        seconds_done = last_out_time_us / 1_000_000
+        percent = seconds_done / duration_seconds * 100.0
+    elif source_size > 0 and output_bytes > 0:
+        percent = output_bytes / source_size * 100.0
+
+    return round(min(99.0, max(0.0, percent)), 1), output_bytes
+
+
 def run_ffmpeg_with_progress(
     command: list[str],
     *,
@@ -662,6 +725,7 @@ def run_ffmpeg_with_progress(
     last_update = 0.0
     speed = "?"
     tail: deque[str] = deque(maxlen=12)
+    source_size = max(source.stat().st_size, 1)
 
     assert process.stdout is not None
     for raw_line in process.stdout:
@@ -683,19 +747,24 @@ def run_ffmpeg_with_progress(
         elif key == "progress":
             now = time.monotonic()
             if now - last_update >= 5 or value == "end":
-                percent = 0.0
-                if duration_seconds and last_out_time_us:
-                    seconds_done = last_out_time_us / 1_000_000
-                    percent = min(100.0, seconds_done / duration_seconds * 100.0)
+                percent, output_bytes = estimate_progress_percent(
+                    duration_seconds=duration_seconds,
+                    last_out_time_us=last_out_time_us,
+                    source_size=source_size,
+                    output_path=output_path,
+                    is_final_update=value == "end",
+                )
                 state.progress(
                     source,
                     percent=percent,
                     speed=speed,
                     phase=phase,
                     output_path=output_path,
+                    output_bytes=output_bytes,
                 )
                 log(
-                    f"{source.name} {phase}: progress={percent:5.1f}% speed={speed}",
+                    f"{source.name} {phase}: progress={percent:5.1f}% "
+                    f"speed={speed} output={format_bytes(output_bytes)}",
                     log_file=log_file,
                 )
                 last_update = now
@@ -882,6 +951,8 @@ def print_status(state_path: Path) -> int:
             json.dumps({"state": str(state_path), "exists": False}, ensure_ascii=False)
         )
         return 0
+    state = StateDB(state_path)
+    state.close()
     conn = sqlite3.connect(str(state_path))
     conn.row_factory = sqlite3.Row
     summary = [
@@ -891,7 +962,9 @@ def print_status(state_path: Path) -> int:
         )
     ]
     active = [dict(row) for row in conn.execute("""
-            select path, status, progress_percent, speed, phase, updated_at
+            select
+                path, status, progress_percent, output_bytes, size,
+                speed, phase, output_path, updated_at
             from files
             where status='running'
             order by updated_at desc
@@ -963,6 +1036,16 @@ def main(argv: list[str] | None = None) -> int:
         min_reservation_bytes=int(args.min_temp_gib * 1024**3),
     )
     try:
+        if not args.dry_run:
+            reset_count = state.reset_interrupted_runs()
+            if reset_count:
+                message = (
+                    f"Reset {reset_count} stale running rows from previous "
+                    "interrupted reencode run"
+                )
+                state.event(None, "warning", message)
+                log(message, log_file=args.log_file)
+
         files = discover_video_files(args.root)
         if not args.dry_run:
             removed_temp_count = cleanup_library_temp_outputs(args.root)
