@@ -2,7 +2,9 @@ from pathlib import Path
 
 
 class TestJobSubmission:
-    def test_enqueue_video_job_uses_video_workspace_and_destination(self, tmp_path: Path):
+    def test_enqueue_video_job_uses_video_workspace_and_destination(
+        self, tmp_path: Path
+    ):
         from app.job_store import JobStore
         from app.job_submission import enqueue_video_job
 
@@ -29,9 +31,7 @@ class TestJobSubmission:
         assert str(job["destination_dir"]) == str(videos_root / "music")
         assert len(items) == 1
         assert items[0]["video_id"] == "dQw4w9WgXcQ"
-        assert items[0]["workspace_path"].endswith(
-            "videos/youtube/dQw4w9WgXcQ"
-        )
+        assert items[0]["workspace_path"].endswith("videos/youtube/dQw4w9WgXcQ")
 
     def test_enqueue_playlist_job_creates_one_item_per_entry(self, tmp_path: Path):
         from app.job_store import JobStore
@@ -77,6 +77,53 @@ class TestJobSubmission:
         assert [item["item_index"] for item in items] == [1, 2]
         assert items[0]["workspace_path"].endswith("videos/youtube/vid1")
         assert items[1]["workspace_path"].endswith("videos/youtube/vid2")
+
+    def test_enqueue_playlist_job_expands_bilibili_multipart_entries(
+        self, tmp_path: Path
+    ):
+        from app.job_store import JobStore
+        from app.job_submission import enqueue_playlist_job
+
+        store = JobStore(tmp_path / "jobs.db")
+
+        job_id = enqueue_playlist_job(
+            store,
+            url="https://space.bilibili.com/1/lists/2?type=season",
+            playlist_id="season-2",
+            playlist_title="Bili Mix",
+            site="space.bilibili.com",
+            destination_dir=tmp_path / "library",
+            tmp_download_folder=tmp_path / "tmp",
+            playlist_entries=[
+                {
+                    "id": "BV1abc",
+                    "title": "Parent Video",
+                    "url": "https://www.bilibili.com/video/BV1abc",
+                    "playlist_index": 1,
+                }
+            ],
+            config={"playlist_title_pattern": "{idx} - {title}"},
+            entry_info_resolver=lambda url: {
+                "_type": "playlist",
+                "entries": [
+                    {"url": f"{url}?p=1"},
+                    {"url": f"{url}?p=2"},
+                ],
+            },
+        )
+
+        job = store.get_job(job_id)
+        items = store.get_job_items(job_id)
+
+        assert job["total_items"] == 2
+        assert [item["video_id"] for item in items] == ["BV1abc_p1", "BV1abc_p2"]
+        assert [item["video_url"] for item in items] == [
+            "https://www.bilibili.com/video/BV1abc?p=1",
+            "https://www.bilibili.com/video/BV1abc?p=2",
+        ]
+        assert [item["item_index"] for item in items] == [1, 2]
+        assert items[0]["workspace_path"].endswith("videos/youtube/BV1abc_p1")
+        assert items[1]["workspace_path"].endswith("videos/youtube/BV1abc_p2")
 
     def test_default_jobs_db_path_lives_under_tmp_jobs(self, tmp_path: Path):
         from app.job_submission import get_jobs_db_path

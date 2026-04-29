@@ -132,6 +132,10 @@ from app.playlist_utils import (
     add_playlist_download_attempt,
     get_last_playlist_download_attempt,
 )
+from app.playlist_entry_expansion import (
+    expand_playlist_entries,
+    fetch_flat_playlist_info,
+)
 from app.playlist_sync import (
     sync_playlist,
     apply_sync_plan,
@@ -1044,7 +1048,9 @@ def build_background_job_config_snapshot(
         "sb_choice": sb_choice,
         "requested_format_id": requested_format_id,
         "cookies_method": st.session_state.get("cookies_method", "none"),
-        "browser_select": st.session_state.get("browser_select", settings.BROWSER_SELECT),
+        "browser_select": st.session_state.get(
+            "browser_select", settings.BROWSER_SELECT
+        ),
         "browser_profile": st.session_state.get("browser_profile", ""),
         "remove_tmp_files_after_download": bool(
             st.session_state.get(
@@ -1315,6 +1321,7 @@ def initialize_video_workspace(
     Returns:
         tuple[dict | None, bool]: (url_info dict or None, success bool)
     """
+
     def _fetch_url_info(url: str, json_output_path: Path) -> dict | None:
         cookies_params = build_cookies_params_from_config(url)
         return build_url_info(
@@ -1917,6 +1924,21 @@ def build_cookies_params_from_config(url: str | None = None) -> list[str]:
         core_build_cookies_params_fn=core_build_cookies_params,
         is_valid_browser_fn=is_valid_browser,
     )
+
+
+def build_playlist_entry_info_resolver():
+    """Build a cached resolver for probing nested playlist entries."""
+    cache: dict[str, dict | None] = {}
+
+    def resolve(entry_url: str) -> dict | None:
+        if entry_url not in cache:
+            cache[entry_url] = fetch_flat_playlist_info(
+                entry_url,
+                cookies_params=build_cookies_params_from_config(entry_url),
+            )
+        return cache[entry_url]
+
+    return resolve
 
 
 class DownloadMetrics:
@@ -3167,7 +3189,9 @@ with st.expander(t("cookies_title"), expanded=False):
                     )
                 )
             with action_col:
-                if st.button(t("common_delete"), key=f"delete_site_cookie_{entry['site']}"):
+                if st.button(
+                    t("common_delete"), key=f"delete_site_cookie_{entry['site']}"
+                ):
                     delete_site_cookies_file(entry["site"])
                     st.rerun()
 
@@ -3634,9 +3658,9 @@ def run_cmd(
                     current_profile = state.get("current_attempting_profile", "")
                     hint_key = f"_format_hint_shown_{current_profile}"
 
-                    if not getattr(
-                        metrics, hint_key, False
-                    ) and not state.get(hint_key, False):
+                    if not getattr(metrics, hint_key, False) and not state.get(
+                        hint_key, False
+                    ):
                         push_log("")  # Empty line for readability
                         log_format_unavailable_error_hint(
                             clean_line,
@@ -3871,7 +3895,9 @@ if submitted:
             site_name = derive_site_name(url)
 
             if is_playlist_mode:
-                playlist_name = filename or st.session_state.get("playlist_title", "Playlist")
+                playlist_name = filename or st.session_state.get(
+                    "playlist_title", "Playlist"
+                )
                 playlist_id = st.session_state.get("playlist_id", "unknown")
                 playlist_to_download = st.session_state.get("playlist_to_download", [])
                 playlist_entries = st.session_state.get("playlist_entries", [])
@@ -3880,6 +3906,18 @@ if submitted:
                     st.success(t("playlist_all_downloaded"))
                     st.session_state.download_finished = True
                     st.stop()
+
+                entry_info_resolver = build_playlist_entry_info_resolver()
+                playlist_entries = expand_playlist_entries(
+                    playlist_entries,
+                    entry_info_resolver=entry_info_resolver,
+                    log_fn=safe_push_log,
+                )
+                playlist_to_download = expand_playlist_entries(
+                    playlist_to_download,
+                    entry_info_resolver=entry_info_resolver,
+                    log_fn=safe_push_log,
+                )
 
                 playlist_workspace = ensure_playlist_workspace(
                     TMP_DOWNLOAD_FOLDER, "youtube", playlist_id
@@ -3961,7 +3999,9 @@ if submitted:
                             do_cut=do_cut,
                             start_sec=start_sec,
                             end_sec=end_sec,
-                            cutting_mode=st.session_state.get("cutting_mode", "keyframes"),
+                            cutting_mode=st.session_state.get(
+                                "cutting_mode", "keyframes"
+                            ),
                             subs_selected=subs_selected,
                             sb_choice=sb_choice,
                             requested_format_id=None,
@@ -3969,7 +4009,9 @@ if submitted:
                         "playlist_workspace": str(playlist_workspace),
                         "playlist_title_pattern": title_pattern,
                         "playlist_total_count": len(playlist_entries),
-                        "playlist_channel": st.session_state.get("playlist_channel", ""),
+                        "playlist_channel": st.session_state.get(
+                            "playlist_channel", ""
+                        ),
                     },
                     max_parallelism=4,
                 )
@@ -3990,9 +4032,7 @@ if submitted:
                 st.stop()
 
             resolved_title = (
-                filename
-                or st.session_state.get("url_info", {}).get("title")
-                or "video"
+                filename or st.session_state.get("url_info", {}).get("title") or "video"
             )
             chosen_format_profiles = st.session_state.get("chosen_format_profiles", [])
             requested_format_id = None
@@ -4038,7 +4078,9 @@ if submitted:
 
         # === PLAYLIST DOWNLOAD MODE ===
         if is_playlist_mode:
-            playlist_name = filename or st.session_state.get("playlist_title", "Playlist")
+            playlist_name = filename or st.session_state.get(
+                "playlist_title", "Playlist"
+            )
             playlist_id = st.session_state.get("playlist_id", "unknown")
             playlist_to_download = st.session_state.get("playlist_to_download", [])
             playlist_entries = st.session_state.get("playlist_entries", [])
@@ -4047,6 +4089,18 @@ if submitted:
                 st.success(t("playlist_all_downloaded"))
                 st.session_state.download_finished = True
                 st.stop()
+
+            entry_info_resolver = build_playlist_entry_info_resolver()
+            playlist_entries = expand_playlist_entries(
+                playlist_entries,
+                entry_info_resolver=entry_info_resolver,
+                log_fn=safe_push_log,
+            )
+            playlist_to_download = expand_playlist_entries(
+                playlist_to_download,
+                entry_info_resolver=entry_info_resolver,
+                log_fn=safe_push_log,
+            )
 
             total_videos = len(playlist_entries)
             videos_to_dl = len(playlist_to_download)

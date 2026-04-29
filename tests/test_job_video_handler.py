@@ -219,6 +219,68 @@ class TestJobVideoHandler:
             )
         ]
 
+    def test_handle_playlist_job_item_prefers_resolved_url_info_title(
+        self, tmp_path: Path
+    ):
+        from app.job_video_handler import handle_playlist_job_item
+
+        playlist_workspace = tmp_path / "playlist"
+        playlist_dest = tmp_path / "library" / "My Playlist"
+        video_workspace = tmp_path / "video"
+        video_workspace.mkdir(parents=True)
+        job = {
+            "id": "job-1",
+            "kind": "playlist",
+            "destination_dir": str(playlist_dest),
+            "config": {
+                "playlist_workspace": str(playlist_workspace),
+                "playlist_title_pattern": "{idx} - {pretty(title)}.{ext}",
+                "playlist_total_count": 12,
+            },
+        }
+        item = {
+            "id": "item-1",
+            "item_index": 3,
+            "video_url": "https://www.bilibili.com/video/BV1abc?p=2",
+            "video_id": "BV1abc_p2",
+            "title": "Video 1 P02",
+            "workspace_path": str(video_workspace),
+        }
+        updates: list[tuple[str, str, str | None, dict | None]] = []
+        moves: list[tuple[Path, Path]] = []
+
+        def fake_download(request, runtime_state):
+            (video_workspace / "url_info.json").write_text(
+                '{"title":"Actual Bilibili Part Title"}',
+                encoding="utf-8",
+            )
+            return 0, video_workspace / "final.webm", None
+
+        handle_playlist_job_item(
+            job,
+            item,
+            store=None,
+            download_executor=fake_download,
+            update_playlist_status=lambda workspace, video_id, status, error=None, extra_data=None: updates.append(
+                (str(workspace), video_id, status, extra_data)
+            )
+            or True,
+            move_to_destination=lambda source, destination: moves.append(
+                (source, destination)
+            )
+            or destination,
+        )
+
+        assert moves == [
+            (
+                video_workspace / "final.webm",
+                playlist_dest / "03 - Actual Bilibili Part Title.webm",
+            )
+        ]
+        assert updates[1][3]["resolved_title"] == (
+            "03 - Actual Bilibili Part Title.webm"
+        )
+
     def test_handle_playlist_job_item_cleans_workspace_after_success_when_enabled(
         self, tmp_path: Path
     ):

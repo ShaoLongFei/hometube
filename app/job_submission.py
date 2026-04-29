@@ -6,6 +6,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from app.job_store import JobStore
+from app.playlist_entry_expansion import (
+    EntryInfoResolver,
+    expand_playlist_entries,
+)
 from app.workspace import ensure_video_workspace, parse_url
 
 
@@ -70,8 +74,13 @@ def enqueue_playlist_job(
     playlist_entries: list[dict],
     config: dict,
     max_parallelism: int = 4,
+    entry_info_resolver: EntryInfoResolver | None = None,
 ) -> str:
     """Create a playlist background job with one job item per entry."""
+    playlist_entries = expand_playlist_entries(
+        playlist_entries,
+        entry_info_resolver=entry_info_resolver,
+    )
     items = []
     for idx, entry in enumerate(playlist_entries, 1):
         video_id = entry.get("id", "")

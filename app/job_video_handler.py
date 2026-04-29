@@ -178,6 +178,18 @@ def _persist_delivery_metadata(
     )
 
 
+def _resolve_downloaded_video_title(workspace: Path, fallback_title: str) -> str:
+    """Prefer the resolved yt-dlp title when available after workspace init."""
+    url_info_path = workspace / "url_info.json"
+    if not url_info_path.exists():
+        return fallback_title
+    try:
+        url_info = load_url_info_from_file(url_info_path) or {}
+    except Exception:
+        return fallback_title
+    return url_info.get("title") or fallback_title
+
+
 def _call_download_executor(
     download_executor,
     request,
@@ -487,7 +499,10 @@ def handle_playlist_job_item(
         resolved_title = render_title(
             config.get("playlist_title_pattern", "{idx} - {pretty(title)}.{ext}"),
             i=int(item.get("item_index") or 1),
-            title=item.get("title") or request.video_title,
+            title=_resolve_downloaded_video_title(
+                request.video_workspace,
+                item.get("title") or request.video_title,
+            ),
             video_id=item.get("video_id") or request.video_id,
             ext=final_file.suffix.lstrip("."),
             total=int(
