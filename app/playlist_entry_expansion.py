@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 from collections.abc import Callable
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
@@ -166,7 +167,9 @@ def fetch_flat_playlist_info(
 ) -> dict | None:
     """Fetch shallow yt-dlp JSON for a URL without downloading media."""
     cmd = [
-        "yt-dlp",
+        sys.executable,
+        "-m",
+        "yt_dlp",
         "-J",
         "--skip-download",
         "--flat-playlist",

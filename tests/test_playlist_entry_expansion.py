@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 
 
 class TestPlaylistEntryExpansion:
@@ -121,7 +122,9 @@ class TestPlaylistEntryExpansion:
         assert calls == [
             {
                 "cmd": [
-                    "yt-dlp",
+                    sys.executable,
+                    "-m",
+                    "yt_dlp",
                     "-J",
                     "--skip-download",
                     "--flat-playlist",
