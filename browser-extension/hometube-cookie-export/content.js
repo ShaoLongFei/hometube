@@ -1,10 +1,11 @@
 window.addEventListener("message", (event) => {
-  if (event.source !== window || !event.data) {
+  if (!event.data) {
     return;
   }
 
   if (event.data.type === "HOMETUBE_EXTENSION_PING") {
-    event.source.postMessage(
+    const target = event.source || window;
+    target.postMessage(
       {
         type: "HOMETUBE_EXTENSION_PONG",
         version: chrome.runtime.getManifest().version,

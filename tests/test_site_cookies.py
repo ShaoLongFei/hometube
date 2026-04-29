@@ -1,5 +1,8 @@
+import os
 from pathlib import Path
 import zipfile
+
+import pytest
 
 
 SAMPLE_COOKIES_TEXT = """# Netscape HTTP Cookie File
@@ -30,6 +33,14 @@ class TestSiteCookiesParsing:
         else:
             raise AssertionError("Expected invalid cookies text to raise ValueError")
 
+    def test_primary_domain_uses_public_suffix_rules(self):
+        from app.site_cookies import get_primary_domain
+
+        assert get_primary_domain("www.example.co.nz") == "example.co.nz"
+        assert get_primary_domain("assets.example.com.ar") == "example.com.ar"
+        assert get_primary_domain("project.github.io") == "project.github.io"
+        assert get_primary_domain("space.bilibili.com") == "bilibili.com"
+
 
 class TestSiteCookiesStorage:
     def test_saves_one_file_per_site(self, tmp_path):
@@ -40,6 +51,16 @@ class TestSiteCookiesStorage:
         assert sorted(result.keys()) == ["bilibili.com", "youtube.com"]
         assert (tmp_path / "youtube.com.txt").exists()
         assert (tmp_path / "bilibili.com.txt").exists()
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission check")
+    def test_saves_cookies_with_private_permissions(self, tmp_path):
+        from app.site_cookies import save_cookies_text_by_site
+
+        cookies_dir = tmp_path / "site-cookies"
+        result = save_cookies_text_by_site(SAMPLE_COOKIES_TEXT, cookies_dir)
+
+        assert (cookies_dir.stat().st_mode & 0o777) == 0o700
+        assert (result["youtube.com"].stat().st_mode & 0o777) == 0o600
 
     def test_lists_saved_site_cookies(self, tmp_path):
         from app.site_cookies import list_saved_site_cookies, save_cookies_text_by_site
@@ -116,3 +137,12 @@ class TestExtensionBundle:
             names = sorted(archive.namelist())
 
         assert names == ["manifest.json", "popup.html"]
+
+    def test_content_script_bridges_streamlit_iframe_extension_detection(self):
+        content_script = Path(
+            "browser-extension/hometube-cookie-export/content.js"
+        ).read_text(encoding="utf-8")
+
+        assert "event.source !== window" not in content_script
+        assert "event.source || window" in content_script
+        assert "HOMETUBE_EXTENSION_PONG" in content_script

@@ -1,6 +1,15 @@
 import sqlite3
+from pathlib import Path
 
 from scripts import reencode_media_library as reencode
+
+
+def test_reencode_defaults_do_not_embed_machine_specific_paths():
+    expected_state_root = Path.home() / ".local" / "state" / "hometube"
+
+    assert reencode.DEFAULT_ROOT is None
+    assert reencode.DEFAULT_STATE.is_relative_to(expected_state_root)
+    assert reencode.DEFAULT_LOG.is_relative_to(expected_state_root)
 
 
 def test_estimate_progress_uses_output_size_when_ffmpeg_time_is_missing(tmp_path):

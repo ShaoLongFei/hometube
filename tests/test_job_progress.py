@@ -47,3 +47,23 @@ class TestJobProgress:
         assert update is not None
         assert update.progress_percent == 100.0
         assert update.status_message == "Transcoding 100.0%"
+
+    def test_scale_job_item_progress_maps_download_to_first_stage(self):
+        from app.job_progress import ProgressUpdate, scale_job_item_progress
+
+        update = scale_job_item_progress(
+            ProgressUpdate(progress_percent=100.0, status_message="Downloading")
+        )
+
+        assert update.progress_percent == 80.0
+        assert update.status_message == "Downloading"
+
+    def test_scale_job_item_progress_maps_transcoding_after_download_stage(self):
+        from app.job_progress import ProgressUpdate, scale_job_item_progress
+
+        update = scale_job_item_progress(
+            ProgressUpdate(progress_percent=50.0, status_message="Transcoding 50.0%")
+        )
+
+        assert update.progress_percent == 89.5
+        assert update.status_message == "Transcoding 50.0%"

@@ -88,8 +88,11 @@ def _expand_bilibili_entry(
             or _url_with_part(parent_url, fallback_part_number)
         )
         part_number = _extract_part_number(nested_url, fallback_part_number)
-        nested_id = nested_entry.get("id") or (
-            f"{parent_id}_p{part_number}" if parent_id else ""
+        source_video_id = nested_entry.get("id") or parent_id
+        nested_id = (
+            f"{parent_id}_p{part_number}"
+            if parent_id
+            else (source_video_id or f"part_{part_number}")
         )
         nested_title = nested_entry.get("title") or f"{parent_title} P{part_number:02d}"
 
@@ -100,6 +103,7 @@ def _expand_bilibili_entry(
             "url": nested_url,
             "title": nested_title,
             "parent_video_id": parent_id,
+            "source_video_id": source_video_id,
             "parent_title": parent_title,
             "source_playlist_index": entry.get("playlist_index", original_position),
             "multipart_index": part_number,

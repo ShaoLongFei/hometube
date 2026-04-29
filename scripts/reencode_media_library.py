@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -20,9 +21,23 @@ from pathlib import Path
 from threading import Condition, Lock
 from typing import Iterable
 
-DEFAULT_ROOT = Path("/mnt/nas/jellyfin/音乐视频")
-DEFAULT_STATE = Path("/opt/hometube/data/tmp/reencode/music_videos_h264_aac.sqlite3")
-DEFAULT_LOG = Path("/opt/hometube/data/tmp/reencode/music_videos_h264_aac.log")
+DEFAULT_ROOT = (
+    Path(os.environ["HOMETUBE_REENCODE_ROOT"]).expanduser()
+    if os.environ.get("HOMETUBE_REENCODE_ROOT")
+    else None
+)
+DEFAULT_STATE = Path(
+    os.environ.get(
+        "HOMETUBE_REENCODE_STATE",
+        "~/.local/state/hometube/reencode/media_library_h264_aac.sqlite3",
+    )
+).expanduser()
+DEFAULT_LOG = Path(
+    os.environ.get(
+        "HOMETUBE_REENCODE_LOG",
+        "~/.local/state/hometube/reencode/media_library_h264_aac.log",
+    )
+).expanduser()
 VIDEO_EXTENSIONS = {
     ".avi",
     ".flv",
@@ -1015,12 +1030,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    args.state = args.state.expanduser()
+    args.log_file = args.log_file.expanduser()
     if args.status:
         return print_status(args.state)
 
+    if args.root is None:
+        log(
+            "Root directory is required. Pass --root or set HOMETUBE_REENCODE_ROOT.",
+            log_file=args.log_file,
+        )
+        return 2
     args.root = args.root.expanduser()
-    args.state = args.state.expanduser()
-    args.log_file = args.log_file.expanduser()
 
     ensure_binary(args.ffprobe)
     ensure_binary(args.ffmpeg)

@@ -20,7 +20,7 @@ from app.job_download_config import (
     build_runtime_state_from_job,
     build_single_video_request_from_job,
 )
-from app.job_progress import ProgressUpdate
+from app.job_progress import ProgressUpdate, scale_job_item_progress
 from app.job_store import JobStore
 from app.logs_utils import safe_push_log
 from app.medias_utils import get_source_from_url
@@ -62,6 +62,7 @@ class _JobProgressCallbacks:
     def update(self, update: ProgressUpdate) -> None:
         if not (self.store and self.item):
             return
+        update = scale_job_item_progress(update)
         self.store.update_job_item_progress(
             self.item["id"],
             progress_percent=update.progress_percent,

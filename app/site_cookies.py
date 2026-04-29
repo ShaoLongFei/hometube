@@ -7,61 +7,49 @@ resolves the matching file for a download URL.
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
 from app.config import get_settings
+from app.domain_utils import get_primary_domain
 
 
 NETSCAPE_HEADER = "# Netscape HTTP Cookie File"
-COMMON_SECOND_LEVEL_SUFFIXES = {
-    "co.uk",
-    "org.uk",
-    "gov.uk",
-    "ac.uk",
-    "com.cn",
-    "net.cn",
-    "org.cn",
-    "com.hk",
-    "com.tw",
-    "co.jp",
-    "co.kr",
-    "co.in",
-    "com.au",
-    "com.br",
-    "com.mx",
-    "com.tr",
-    "com.sg",
-}
 
 
 def get_managed_cookies_dir(base_dir: Path | None = None) -> Path:
     """Get the managed cookies directory and ensure it exists."""
     directory = base_dir if base_dir is not None else get_settings().MANAGED_COOKIES_FOLDER
-    directory.mkdir(parents=True, exist_ok=True)
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    directory.chmod(0o700)
     return directory
 
 
-def get_primary_domain(host_or_domain: str) -> str:
-    """Reduce a host/domain to its primary domain grouping key."""
-    value = (host_or_domain or "").strip().lower().lstrip(".")
-    if not value:
-        return ""
-
-    labels = [label for label in value.split(".") if label]
-    if len(labels) <= 2:
-        return ".".join(labels)
-
-    last_two = ".".join(labels[-2:])
-    last_three = ".".join(labels[-3:])
-
-    if last_two in COMMON_SECOND_LEVEL_SUFFIXES and len(labels) >= 3:
-        return last_three
-
-    if ".".join(labels[-2:]) in COMMON_SECOND_LEVEL_SUFFIXES and len(labels) >= 3:
-        return last_three
-
-    return last_two
+def _write_private_text(target: Path, content: str) -> None:
+    """Atomically write sensitive text with owner-only file permissions."""
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    target.parent.chmod(0o700)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=target.parent,
+        text=True,
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        os.replace(tmp_path, target)
+        target.chmod(0o600)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _iter_cookie_entries(cookies_text: str) -> list[str]:
@@ -109,7 +97,7 @@ def save_cookies_text_by_site(
     for site, entries in grouped.items():
         target = directory / f"{site}.txt"
         content = NETSCAPE_HEADER + "\n" + "\n".join(entries) + "\n"
-        target.write_text(content, encoding="utf-8")
+        _write_private_text(target, content)
         saved[site] = target
 
     return saved

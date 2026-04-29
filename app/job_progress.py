@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from dataclasses import replace
 
 
 _DOWNLOAD_PROGRESS_RE = re.compile(
@@ -87,6 +88,21 @@ def _format_transcoding_update(percent: float) -> ProgressUpdate:
         progress_percent=percent,
         status_message=f"Transcoding {percent:.1f}%",
     )
+
+
+def scale_job_item_progress(update: ProgressUpdate) -> ProgressUpdate:
+    """Map stage-local command progress to monotonic item progress."""
+    if update.progress_percent is None:
+        return update
+
+    status_message = (update.status_message or "").strip().lower()
+    percent = min(max(update.progress_percent, 0.0), 100.0)
+
+    if status_message.startswith("transcoding"):
+        return replace(update, progress_percent=round(min(80.0 + percent * 0.19, 99.0), 1))
+    if status_message.startswith("downloading"):
+        return replace(update, progress_percent=round(min(percent * 0.8, 80.0), 1))
+    return update
 
 
 def _parse_ffmpeg_time_seconds(line: str) -> float | None:

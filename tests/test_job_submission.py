@@ -122,8 +122,8 @@ class TestJobSubmission:
             "https://www.bilibili.com/video/BV1abc?p=2",
         ]
         assert [item["item_index"] for item in items] == [1, 2]
-        assert items[0]["workspace_path"].endswith("videos/youtube/BV1abc_p1")
-        assert items[1]["workspace_path"].endswith("videos/youtube/BV1abc_p2")
+        assert items[0]["workspace_path"].endswith("videos/bilibili/BV1abc_p1")
+        assert items[1]["workspace_path"].endswith("videos/bilibili/BV1abc_p2")
 
     def test_default_jobs_db_path_lives_under_tmp_jobs(self, tmp_path: Path):
         from app.job_submission import get_jobs_db_path

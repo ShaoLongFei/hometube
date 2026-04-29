@@ -29,10 +29,12 @@ Benefits:
 - Easy cleanup and cache management
 """
 
-import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+from app.domain_utils import site_key_from_url, stable_url_hash
 
 
 @dataclass
@@ -48,7 +50,7 @@ class UrlInfo:
         return f"{self.platform}/{self.type}/{self.id}"
 
 
-def parse_url(url: str) -> UrlInfo:
+def parse_url(url: str | None) -> UrlInfo:
     """
     Parse a URL to extract platform, ID, and type.
 
@@ -68,6 +70,8 @@ def parse_url(url: str) -> UrlInfo:
         return UrlInfo(platform="unknown", id="unknown", type="video")
 
     url = url.strip()
+    parsed_url = urlparse(url)
+    query = parse_qs(parsed_url.query)
 
     # YouTube Playlist
     youtube_playlist_match = re.search(
@@ -80,9 +84,30 @@ def parse_url(url: str) -> UrlInfo:
             type="playlist",
         )
 
+    # Bilibili space list / season
+    if "bilibili.com" in (parsed_url.hostname or "") and "/lists" in parsed_url.path:
+        sid = (query.get("sid") or query.get("list_id") or [""])[0]
+        if not sid:
+            list_match = re.search(r"/lists/([0-9A-Za-z_-]+)", parsed_url.path)
+            sid = list_match.group(1) if list_match else stable_url_hash(url)
+        return UrlInfo(platform="bilibili", id=sid, type="playlist")
+
+    # Bilibili video, including multipart ?p=N pages.
+    bilibili_video_match = re.search(
+        r"bilibili\.com/video/((?:BV[0-9A-Za-z]+)|(?:av\d+))",
+        url,
+        re.IGNORECASE,
+    )
+    if bilibili_video_match:
+        video_id = bilibili_video_match.group(1)
+        part = (query.get("p") or [""])[0]
+        if part.isdigit() and int(part) > 0:
+            video_id = f"{video_id}_p{int(part)}"
+        return UrlInfo(platform="bilibili", id=video_id, type="video")
+
     # YouTube standard format
     youtube_watch_match = re.search(
-        r"(?:youtube\.com/watch\?v=|youtube\.com/.*[?&]v=)([a-zA-Z0-9_-]{11})", url
+        r"(?:youtube\.com/watch\?v=|youtube\.com/.*[?&]v=)([a-zA-Z0-9_-]+)", url
     )
     if youtube_watch_match:
         return UrlInfo(
@@ -155,8 +180,8 @@ def parse_url(url: str) -> UrlInfo:
         )
 
     # Generic fallback
-    url_hash = hashlib.md5(url.encode("utf-8")).hexdigest()[:12]
-    return UrlInfo(platform="generic", id=url_hash, type="video")
+    url_hash = stable_url_hash(url)
+    return UrlInfo(platform=site_key_from_url(url), id=url_hash, type="video")
 
 
 def get_video_workspace(tmp_base: Path, platform: str, video_id: str) -> Path:

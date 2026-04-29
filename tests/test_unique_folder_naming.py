@@ -98,8 +98,8 @@ class TestGetUniqueFolderName:
         result1 = get_unique_video_folder_name_from_url(url)
         result2 = get_unique_video_folder_name_from_url(url)
 
-        # Should start with generic-
-        assert result1.startswith("generic-")
+        # Unknown platforms are grouped by primary domain.
+        assert result1.startswith("example.com-")
         # Same URL should produce same result
         assert result1 == result2
 

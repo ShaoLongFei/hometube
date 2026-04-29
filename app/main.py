@@ -1941,6 +1941,11 @@ def build_playlist_entry_info_resolver():
     return resolve
 
 
+def get_playlist_platform_key(playlist_url: str | None) -> str:
+    """Resolve the workspace platform key for a playlist URL."""
+    return parse_url_info(playlist_url or "").platform or "generic"
+
+
 class DownloadMetrics:
     """Class to manage download progress metrics and display"""
 
@@ -2074,12 +2079,13 @@ if url and url.strip():
                 if is_playlist_info(url_info):
                     playlist_id = url_info.get("id", "")
                     if playlist_id:
+                        playlist_platform = get_playlist_platform_key(url)
                         playlist_workspace = ensure_playlist_workspace(
-                            TMP_DOWNLOAD_FOLDER, "youtube", playlist_id
+                            TMP_DOWNLOAD_FOLDER, playlist_platform, playlist_id
                         )
                         st.session_state["tmp_url_workspace"] = playlist_workspace
                         st.session_state["unique_folder_name"] = (
-                            f"playlists/youtube/{playlist_id}"
+                            f"playlists/{playlist_platform}/{playlist_id}"
                         )
     else:
         # Reuse existing url_info from session state
@@ -2093,13 +2099,14 @@ if url and url.strip():
         if is_playlist:
             playlist_id = url_info.get("id", "")
             if playlist_id:
+                playlist_platform = get_playlist_platform_key(url)
                 playlist_workspace = ensure_playlist_workspace(
-                    TMP_DOWNLOAD_FOLDER, "youtube", playlist_id
+                    TMP_DOWNLOAD_FOLDER, playlist_platform, playlist_id
                 )
                 # Always update to ensure we use the correct playlist workspace
                 st.session_state["tmp_url_workspace"] = playlist_workspace
                 st.session_state["unique_folder_name"] = (
-                    f"youtube-playlist-{playlist_id}"
+                    f"{playlist_platform}-playlist-{playlist_id}"
                 )
         elif "tmp_url_workspace" not in st.session_state or not st.session_state.get(
             "tmp_url_workspace"
@@ -2141,8 +2148,9 @@ if is_playlist_mode and not tmp_url_workspace:
     # Try to construct workspace from playlist_id or URL
     playlist_id = st.session_state.get("playlist_id")
     if playlist_id:
+        playlist_platform = get_playlist_platform_key(url)
         tmp_url_workspace = ensure_playlist_workspace(
-            TMP_DOWNLOAD_FOLDER, "youtube", playlist_id
+            TMP_DOWNLOAD_FOLDER, playlist_platform, playlist_id
         )
     elif url and url.strip():
         # Fallback: construct from URL
@@ -2464,8 +2472,11 @@ if (
             sync_plan = None
 
             if playlist_id_for_sync:
+                playlist_platform_for_sync = get_playlist_platform_key(url)
                 playlist_workspace_for_sync = ensure_playlist_workspace(
-                    TMP_DOWNLOAD_FOLDER, "youtube", playlist_id_for_sync
+                    TMP_DOWNLOAD_FOLDER,
+                    playlist_platform_for_sync,
+                    playlist_id_for_sync,
                 )
                 existing_status_for_sync = load_playlist_status(
                     playlist_workspace_for_sync
@@ -3920,7 +3931,7 @@ if submitted:
                 )
 
                 playlist_workspace = ensure_playlist_workspace(
-                    TMP_DOWNLOAD_FOLDER, "youtube", playlist_id
+                    TMP_DOWNLOAD_FOLDER, get_playlist_platform_key(url), playlist_id
                 )
                 playlist_dest = dest_dir / sanitize_filename(playlist_name)
                 ensure_dir(playlist_dest)
@@ -4128,7 +4139,7 @@ if submitted:
 
             # Create playlist workspace
             playlist_workspace = ensure_playlist_workspace(
-                TMP_DOWNLOAD_FOLDER, "youtube", playlist_id
+                TMP_DOWNLOAD_FOLDER, get_playlist_platform_key(url), playlist_id
             )
             push_log(f"🔧 Playlist workspace: {playlist_workspace}")
 

@@ -48,6 +48,29 @@ class TestParseUrl:
         assert info.id == "PLxxxxxx"
         assert info.type == "playlist"
 
+    def test_bilibili_video_part(self):
+        """Test parsing Bilibili multipart video URL."""
+        url = "https://www.bilibili.com/video/BV1abc?p=2"
+        info = parse_url(url)
+        assert info.platform == "bilibili"
+        assert info.id == "BV1abc_p2"
+        assert info.type == "video"
+
+    def test_bilibili_space_list(self):
+        """Test parsing Bilibili space list URL."""
+        url = "https://space.bilibili.com/3546624353634458/lists?sid=6656145"
+        info = parse_url(url)
+        assert info.platform == "bilibili"
+        assert info.id == "6656145"
+        assert info.type == "playlist"
+
+    def test_generic_url_uses_primary_domain_as_platform(self):
+        """Test generic URLs group workspaces by primary domain."""
+        url = "https://videos.example.co.nz/watch/123"
+        info = parse_url(url)
+        assert info.platform == "example.co.nz"
+        assert info.type == "video"
+
     def test_instagram(self):
         """Test parsing Instagram URL."""
         url = "https://www.instagram.com/p/ABC123/"

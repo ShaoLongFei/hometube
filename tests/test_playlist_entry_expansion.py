@@ -91,6 +91,31 @@ class TestPlaylistEntryExpansion:
         assert expanded[0]["id"] == "BV1abc"
         assert expanded[0]["playlist_index"] == 1
 
+    def test_bilibili_multipart_ids_stay_unique_when_nested_entries_reuse_parent_id(
+        self,
+    ):
+        from app.playlist_entry_expansion import expand_playlist_entries
+
+        expanded = expand_playlist_entries(
+            [
+                {
+                    "id": "BV1abc",
+                    "title": "Parent Video",
+                    "url": "https://www.bilibili.com/video/BV1abc",
+                }
+            ],
+            entry_info_resolver=lambda url: {
+                "_type": "playlist",
+                "entries": [
+                    {"id": "BV1abc", "url": f"{url}?p=1", "title": "Part 1"},
+                    {"id": "BV1abc", "url": f"{url}?p=2", "title": "Part 2"},
+                ],
+            },
+        )
+
+        assert [item["id"] for item in expanded] == ["BV1abc_p1", "BV1abc_p2"]
+        assert [item["source_video_id"] for item in expanded] == ["BV1abc", "BV1abc"]
+
     def test_fetch_flat_playlist_info_uses_cookies_and_parses_json(self):
         from app.playlist_entry_expansion import fetch_flat_playlist_info
 

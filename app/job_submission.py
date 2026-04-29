@@ -87,11 +87,16 @@ def enqueue_playlist_job(
         video_url = entry.get("url") or (
             f"https://www.youtube.com/watch?v={video_id}" if video_id else url
         )
-        workspace = ensure_video_workspace(tmp_download_folder, "youtube", video_id)
+        parsed = parse_url(video_url)
+        workspace = ensure_video_workspace(
+            tmp_download_folder,
+            parsed.platform,
+            video_id or parsed.id,
+        )
         items.append(
             {
                 "item_index": entry.get("playlist_index", idx),
-                "video_id": video_id,
+                "video_id": video_id or parsed.id,
                 "video_url": video_url,
                 "title": entry.get("title", f"Video {idx}"),
                 "workspace_path": str(workspace),

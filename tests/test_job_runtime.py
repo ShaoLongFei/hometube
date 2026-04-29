@@ -344,6 +344,54 @@ class TestSchedulerLoop:
             ("recover", tmp_path / "jobs.db"),
             ("iterate", 1),
             ("sleep", None),
+            ("recover", tmp_path / "jobs.db"),
+            ("iterate", 2),
+            ("release", None),
+        ]
+
+    def test_run_scheduler_loop_recovers_again_after_worker_disappears(
+        self, tmp_path: Path
+    ):
+        from app.job_runtime import run_scheduler_loop
+
+        events: list[tuple[str, object]] = []
+
+        class FakeLock:
+            def acquire(self) -> bool:
+                events.append(("acquire", None))
+                return True
+
+            def release(self) -> None:
+                events.append(("release", None))
+
+        class FakeStore:
+            db_path = tmp_path / "jobs.db"
+
+        attempts = {"count": 0}
+
+        def should_stop() -> bool:
+            return attempts["count"] >= 2
+
+        def iterate(_store):
+            attempts["count"] += 1
+            events.append(("iterate", attempts["count"]))
+            return []
+
+        run_scheduler_loop(
+            FakeStore(),
+            lock=FakeLock(),
+            sleep_fn=lambda _seconds: events.append(("sleep", None)),
+            should_stop=should_stop,
+            recover_fn=lambda store: events.append(("recover", attempts["count"])) or 0,
+            iteration_fn=iterate,
+        )
+
+        assert events == [
+            ("acquire", None),
+            ("recover", 0),
+            ("iterate", 1),
+            ("sleep", None),
+            ("recover", 1),
             ("iterate", 2),
             ("release", None),
         ]

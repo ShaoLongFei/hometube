@@ -1,39 +1,3 @@
-function getPrimaryDomain(hostname) {
-  const commonSecondLevelSuffixes = new Set([
-    "co.uk",
-    "org.uk",
-    "gov.uk",
-    "ac.uk",
-    "com.cn",
-    "net.cn",
-    "org.cn",
-    "com.hk",
-    "com.tw",
-    "co.jp",
-    "co.kr",
-    "co.in",
-    "com.au",
-    "com.br",
-    "com.mx",
-    "com.tr",
-    "com.sg",
-  ]);
-
-  const labels = (hostname || "").toLowerCase().split(".").filter(Boolean);
-  if (labels.length <= 2) {
-    return labels.join(".");
-  }
-
-  const lastTwo = labels.slice(-2).join(".");
-  const lastThree = labels.slice(-3).join(".");
-
-  if (commonSecondLevelSuffixes.has(lastTwo) && labels.length >= 3) {
-    return lastThree;
-  }
-
-  return lastTwo;
-}
-
 function cookieMatchesHost(cookie, hostname) {
   const normalizedDomain = (cookie.domain || "").replace(/^\./, "").toLowerCase();
   const normalizedHost = (hostname || "").toLowerCase();
@@ -84,24 +48,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    const primaryDomain = getPrimaryDomain(url.hostname);
+    const activeHost = url.hostname.toLowerCase();
     chrome.cookies.getAll({}, (cookies) => {
       const matchingCookies = cookies
-        .filter((cookie) => cookieMatchesHost(cookie, url.hostname))
-        .filter((cookie) => getPrimaryDomain(cookie.domain || "") === primaryDomain)
+        .filter((cookie) => cookieMatchesHost(cookie, activeHost))
         .map(toNetscapeLine);
 
       if (matchingCookies.length === 0) {
         sendResponse({
           ok: false,
-          error: `No cookies found for ${primaryDomain}. Make sure you are signed in on the active site.`,
+          error: `No cookies found for ${activeHost}. Make sure you are signed in on the active site.`,
         });
         return;
       }
 
       sendResponse({
         ok: true,
-        site: primaryDomain,
+        site: activeHost,
         count: matchingCookies.length,
         text: `# Netscape HTTP Cookie File\n${matchingCookies.join("\n")}\n`,
       });

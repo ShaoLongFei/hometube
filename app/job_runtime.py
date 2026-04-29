@@ -281,12 +281,16 @@ def run_scheduler_loop(
     )
 
     try:
-        try:
-            recover(store)
-        except sqlite3.OperationalError as exc:
-            if not is_sqlite_lock_error(exc):
-                raise
         while not should_stop():
+            try:
+                recover(store)
+            except sqlite3.OperationalError as exc:
+                if not is_sqlite_lock_error(exc):
+                    raise
+                if should_stop():
+                    break
+                sleep_fn(poll_interval_seconds)
+                continue
             try:
                 iterate(store)
             except sqlite3.OperationalError as exc:
