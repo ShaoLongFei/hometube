@@ -12,6 +12,14 @@ def test_reencode_defaults_do_not_embed_machine_specific_paths():
     assert reencode.DEFAULT_LOG.is_relative_to(expected_state_root)
 
 
+def test_parse_args_defaults_to_medium_preset_and_8_workers():
+    args = reencode.parse_args([])
+
+    assert args.preset == "medium"
+    assert args.jobs == 8
+    assert args.ffmpeg_threads == 4
+
+
 def test_estimate_progress_uses_output_size_when_ffmpeg_time_is_missing(tmp_path):
     source = tmp_path / "source.mkv"
     output = tmp_path / ".hometube-reencode.tmp.mkv"
