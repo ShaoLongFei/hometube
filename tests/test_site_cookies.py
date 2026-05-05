@@ -116,6 +116,33 @@ class TestSiteCookiesResolution:
 
         assert params == ["--cookies", str(tmp_path / "bilibili.com.txt")]
 
+    def test_ignores_empty_managed_site_cookies_file(self, tmp_path):
+        from app.site_cookies import build_site_cookies_params
+
+        (tmp_path / "bilibili.com.txt").write_text("", encoding="utf-8")
+
+        params = build_site_cookies_params(
+            "https://space.bilibili.com/3546624353634458/lists?sid=6656145",
+            tmp_path,
+        )
+
+        assert params == []
+
+    def test_ignores_header_only_managed_site_cookies_file(self, tmp_path):
+        from app.site_cookies import build_site_cookies_params
+
+        (tmp_path / "bilibili.com.txt").write_text(
+            "# Netscape HTTP Cookie File\n",
+            encoding="utf-8",
+        )
+
+        params = build_site_cookies_params(
+            "https://space.bilibili.com/3546624353634458/lists?sid=6656145",
+            tmp_path,
+        )
+
+        assert params == []
+
 
 class TestExtensionBundle:
     def test_builds_extension_zip_from_directory(self, tmp_path):

@@ -127,9 +127,20 @@ class TestCoreFunctions:
         assert is_valid_cookie_file("") is False
         assert is_valid_cookie_file("/nonexistent/file.txt") is False
 
-        # Test with temporary file
+        # Header-only Netscape cookie files should be rejected.
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tmp:
-            tmp.write(b"# Cookie file content")
+            tmp.write(b"# Netscape HTTP Cookie File\n")
+            tmp.flush()
+            assert is_valid_cookie_file(tmp.name) is False
+
+        Path(tmp.name).unlink(missing_ok=True)
+
+        # Test with a valid Netscape cookie entry
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tmp:
+            tmp.write(
+                b"# Netscape HTTP Cookie File\n"
+                b".example.com\tTRUE\t/\tTRUE\t2147483647\tSID\tvalue\n"
+            )
             tmp.flush()
             assert is_valid_cookie_file(tmp.name) is True
 

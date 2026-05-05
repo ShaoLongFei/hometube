@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from app.config import get_settings
 from app.domain_utils import get_primary_domain
+from app.file_system_utils import describe_cookie_file_issue
 
 
 NETSCAPE_HEADER = "# Netscape HTTP Cookie File"
@@ -142,13 +143,28 @@ def resolve_site_cookies_file_for_url(
     base_dir: Path | None = None,
 ) -> Path | None:
     """Resolve the managed cookies file for a given URL."""
+    path, issue = inspect_site_cookies_file_for_url(url, base_dir)
+    if issue is not None:
+        return None
+    return path
+
+
+def inspect_site_cookies_file_for_url(
+    url: str,
+    base_dir: Path | None = None,
+) -> tuple[Path | None, str | None]:
+    """Inspect the managed cookies file for a URL and return any validation issue."""
     host = urlparse(url).hostname or ""
     site = get_primary_domain(host)
     if not site:
-        return None
+        return None, None
 
     target = get_managed_cookies_dir(base_dir) / f"{site}.txt"
-    return target if target.exists() else None
+    if not target.exists():
+        return None, None
+
+    issue = describe_cookie_file_issue(str(target))
+    return target, issue
 
 
 def build_site_cookies_params(
@@ -156,7 +172,7 @@ def build_site_cookies_params(
     base_dir: Path | None = None,
 ) -> list[str]:
     """Build yt-dlp --cookies args for a URL if managed site cookies exist."""
-    path = resolve_site_cookies_file_for_url(url, base_dir)
-    if path is None:
+    path, issue = inspect_site_cookies_file_for_url(url, base_dir)
+    if path is None or issue is not None:
         return []
     return ["--cookies", str(path)]

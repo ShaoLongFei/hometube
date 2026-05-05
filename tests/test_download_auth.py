@@ -11,6 +11,7 @@ class TestDownloadAuth:
             runtime_state=MemoryRuntimeState({"cookies_method": "browser"}),
             cookies_file_path=str(tmp_path / "cookies.txt"),
             managed_cookies_params_fn=lambda url: ["--cookies", "/managed/bilibili.txt"],
+            managed_cookies_inspector_fn=lambda url: (None, None),
             core_build_cookies_params_fn=lambda **kwargs: ["unexpected"],
             log_fn=lambda _message: None,
         )
@@ -79,3 +80,52 @@ class TestDownloadAuth:
         )
 
         assert result == ["browser", "chrome"]
+
+    def test_resolve_cookies_params_warns_when_managed_site_cookies_invalid(
+        self, tmp_path: Path
+    ):
+        from app.download_auth import resolve_cookies_params
+        from app.download_runtime_state import MemoryRuntimeState
+
+        logs: list[str] = []
+
+        result = resolve_cookies_params(
+            url="https://www.bilibili.com/video/BV1xx",
+            runtime_state=MemoryRuntimeState({"cookies_method": "browser"}),
+            cookies_file_path=str(tmp_path / "cookies.txt"),
+            managed_cookies_params_fn=lambda url: [],
+            core_build_cookies_params_fn=lambda **kwargs: ["--no-cookies"],
+            log_fn=logs.append,
+            managed_cookies_inspector_fn=lambda url: (
+                Path("/config/site_cookies/bilibili.com.txt"),
+                "empty file",
+            ),
+        )
+
+        assert result == ["--no-cookies"]
+        assert any("invalid managed site cookies" in message for message in logs)
+        assert any("bilibili.com.txt" in message for message in logs)
+
+    def test_resolve_cookies_params_from_config_warns_when_managed_site_cookies_invalid(
+        self, tmp_path: Path
+    ):
+        from app.download_auth import resolve_cookies_params_from_config
+
+        logs: list[str] = []
+
+        result = resolve_cookies_params_from_config(
+            url="https://www.bilibili.com/video/BV1xx",
+            cookies_file_path="",
+            cookies_from_browser="",
+            managed_cookies_params_fn=lambda url: [],
+            core_build_cookies_params_fn=lambda **kwargs: ["--no-cookies"],
+            is_valid_browser_fn=lambda browser: False,
+            managed_cookies_inspector_fn=lambda url: (
+                tmp_path / "bilibili.com.txt",
+                "empty file",
+            ),
+            log_fn=logs.append,
+        )
+
+        assert result == []
+        assert any("invalid managed site cookies" in message for message in logs)

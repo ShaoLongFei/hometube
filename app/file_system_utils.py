@@ -44,6 +44,52 @@ def sanitize_filename(name: str) -> str:
     return sanitized or "unnamed"
 
 
+def _is_netscape_cookie_text(cookie_text: str) -> bool:
+    """Return True when the text looks like a Netscape cookies file."""
+    lines = [line.strip() for line in cookie_text.splitlines() if line.strip()]
+    if not lines:
+        return False
+
+    header = lines[0].lstrip("\ufeff")
+    if header != "# Netscape HTTP Cookie File":
+        return False
+
+    for line in lines[1:]:
+        if line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 7 and parts[0].strip():
+            return True
+
+    return False
+
+
+def describe_cookie_file_issue(file_path: str) -> str | None:
+    """Return a human-readable reason why a cookie file is invalid, or None."""
+    if not file_path:
+        return "cookie file path is empty"
+
+    path = Path(file_path)
+    if not path.exists() or not path.is_file():
+        return "cookie file does not exist"
+
+    if path.stat().st_size == 0:
+        return "cookie file is empty"
+
+    if path.suffix.lower() not in [".txt", ".cookies"]:
+        return "cookie file must use a .txt or .cookies extension"
+
+    try:
+        cookie_text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return f"cookie file could not be read: {exc}"
+
+    if not _is_netscape_cookie_text(cookie_text):
+        return "cookie file is not valid Netscape cookies format"
+
+    return None
+
+
 def get_unique_video_folder_name_from_url(url: str) -> str:
     """
     Generate a unique folder name for a video or playlist based on its URL.
@@ -78,24 +124,7 @@ def is_valid_cookie_file(file_path: str) -> bool:
     Returns:
         True if file exists and appears to be a valid cookie file
     """
-    if not file_path:
-        return False
-
-    path = Path(file_path)
-
-    # Check if file exists
-    if not path.exists() or not path.is_file():
-        return False
-
-    # Check file size (should not be empty)
-    if path.stat().st_size == 0:
-        return False
-
-    # Check file extension
-    if path.suffix.lower() not in [".txt", ".cookies"]:
-        return False
-
-    return True
+    return describe_cookie_file_issue(file_path) is None
 
 
 def is_valid_browser(browser: str) -> bool:

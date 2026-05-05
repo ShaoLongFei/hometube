@@ -1929,6 +1929,7 @@ def build_cookies_params_from_config(url: str | None = None) -> list[str]:
         managed_cookies_params_fn=build_site_cookies_params,
         core_build_cookies_params_fn=core_build_cookies_params,
         is_valid_browser_fn=is_valid_browser,
+        log_fn=safe_push_log,
     )
 
 
